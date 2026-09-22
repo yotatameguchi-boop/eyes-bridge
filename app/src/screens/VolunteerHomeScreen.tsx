@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { FlatList, StyleSheet, Switch, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, StyleSheet, Switch, Text, View } from "react-native";
 import { BigButton } from "../components/BigButton";
+import { VolunteerGateScreen } from "./VolunteerGateScreen";
 import {
   AlreadyTakenError,
   claimRequest,
@@ -9,8 +10,9 @@ import {
   type QueueHandle,
 } from "../lib/requests";
 import { goOffline, goOnline } from "../lib/presence";
-import { registerForPush } from "../lib/push";
+import { registerForPush, setupVoipPush } from "../lib/push";
 import { endCall, markAnswered, ringIncoming, setupCallKit, stopRinging } from "../lib/calls";
+import { fetchStanding, type VolunteerStanding } from "../lib/safety";
 import { notifyStateChange } from "../lib/a11y";
 import type { HelpRequest } from "../lib/supabase";
 import type { Profile } from "../lib/session";
@@ -22,9 +24,23 @@ type Props = {
 };
 
 export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
+  const [standing, setStanding] = useState<VolunteerStanding | null>(null);
+  const [loadingStanding, setLoadingStanding] = useState(true);
   const [available, setAvailable] = useState(false);
   const [queue, setQueue] = useState<HelpRequest[]>([]);
   const [busy, setBusy] = useState(false);
+
+  const refreshStanding = useCallback(async () => {
+    setLoadingStanding(true);
+    setStanding(await fetchStanding(profile.id).catch(() => null));
+    setLoadingStanding(false);
+  }, [profile.id]);
+
+  useEffect(() => {
+    void refreshStanding();
+  }, [refreshStanding]);
+
+  const approved = standing?.reviewState === "approved" && standing.agreedToTerms;
 
   const accept = useCallback(
     async (requestId: string) => {
@@ -35,11 +51,21 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
         await notifyStateChange("繋がりました", "connected");
         onAccepted(claimed);
       } catch (e) {
+        const message = e instanceof Error ? e.message : "";
+
         if (e instanceof AlreadyTakenError) {
           // 負けは失敗ではない。誰かが対応できたということ。
           stopRinging(requestId, "taken");
           setQueue((q) => q.filter((r) => r.id !== requestId));
           await notifyStateChange("ほかの人が対応しました");
+        } else if (message.includes("NOT_APPROVED")) {
+          stopRinging(requestId, "cancelled");
+          await notifyStateChange("待機できる状態ではありません", "failed");
+          await refreshStanding();
+        } else if (message.includes("BLOCKED")) {
+          stopRinging(requestId, "cancelled");
+          setQueue((q) => q.filter((r) => r.id !== requestId));
+          await notifyStateChange("この依頼は受けられません", "failed");
         } else {
           await notifyStateChange("受けられませんでした", "failed");
         }
@@ -47,7 +73,7 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
         setBusy(false);
       }
     },
-    [onAccepted],
+    [onAccepted, refreshStanding],
   );
 
   // CallKit は起動時に1度だけ配線する。
@@ -62,8 +88,14 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
     });
   }, [accept]);
 
+  // iOS の VoIP 着信。アプリが終了していてもここに入ってくるので、
+  // 受け取ったらその場で鳴らす（待機トグルの状態には依存させない）。
   useEffect(() => {
-    if (!available) {
+    return setupVoipPush(profile.id, ({ requestId }) => ringIncoming(requestId));
+  }, [profile.id]);
+
+  useEffect(() => {
+    if (!available || !approved) {
       setQueue([]);
       return;
     }
@@ -87,7 +119,7 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
       alive = false;
       handle?.unsubscribe();
     };
-  }, [available, profile.language]);
+  }, [available, approved, profile.language]);
 
   async function toggle(next: boolean) {
     setBusy(true);
@@ -104,6 +136,23 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (loadingStanding) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  if (!standing || !approved) {
+    return (
+      <VolunteerGateScreen
+        standing={standing ?? { reviewState: "pending", agreedToTerms: false, acceptedCount: 0 }}
+        onRefresh={() => void refreshStanding()}
+      />
+    );
   }
 
   return (
@@ -149,6 +198,7 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
 
       <Text style={styles.note}>
         通話中の映像は保存されません。相手には自分のカメラは映りません。
+        通話のあとで通報とブロックができます。
       </Text>
     </View>
   );
@@ -156,6 +206,7 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg, padding: space.md },
+  center: { alignItems: "center", backgroundColor: colors.bg, flex: 1, justifyContent: "center" },
   toggleRow: {
     alignItems: "center",
     backgroundColor: colors.surface,

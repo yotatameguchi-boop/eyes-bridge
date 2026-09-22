@@ -8,6 +8,7 @@ import { RequesterHomeScreen } from "./src/screens/RequesterHomeScreen";
 import { VolunteerHomeScreen } from "./src/screens/VolunteerHomeScreen";
 import { CallScreen } from "./src/screens/CallScreen";
 import { ReadAloudScreen } from "./src/screens/ReadAloudScreen";
+import { ReportScreen } from "./src/screens/ReportScreen";
 import { signOut, useSession, type Profile } from "./src/lib/session";
 import { onNotificationTapped } from "./src/lib/push";
 import { claimRequest, AlreadyTakenError } from "./src/lib/requests";
@@ -22,6 +23,7 @@ registerGlobals();
 type Screen =
   | { name: "home" }
   | { name: "call"; request: HelpRequest }
+  | { name: "report"; requestId: string }
   | { name: "read" };
 
 export default function App() {
@@ -83,7 +85,20 @@ export default function App() {
         <CallScreen
           request={screen.request}
           role={profile.role}
-          onEnded={() => setScreen({ name: "home" })}
+          // 通話のあとに必ず通報の入口を通す。
+          // 設定の奥に置くと、嫌な思いをした人ほど辿り着けない。
+          onEnded={() => setScreen({ name: "report", requestId: screen.request.id })}
+        />
+      </Shell>
+    );
+  }
+
+  if (screen.name === "report") {
+    return (
+      <Shell>
+        <ReportScreen
+          requestId={screen.requestId}
+          onDone={() => setScreen({ name: "home" })}
         />
       </Shell>
     );

@@ -6,7 +6,7 @@
 ## 構成
 
 ```
-RN（callkeep で OS の着信画面）
+RN（callkeep + PushKit で OS の着信画面）
   ├ 通話: LiveKit（Cloud → 必要になったら自前 SFU）
   ├ 待機列: Supabase Realtime Presence + Postgres
   └ AI経路: 端末内 TTS（expo-speech）+ サーバ側 PaddleOCR
@@ -15,8 +15,9 @@ RN（callkeep で OS の着信画面）
 | ディレクトリ | 中身 |
 |---|---|
 | `app/` | React Native (Expo SDK 57 / dev client)。依頼者とボランティアの両方 |
-| `supabase/migrations/` | スキーマ・RLS・取り合いを解決する RPC |
-| `supabase/functions/` | LiveKit トークン発行、待機者への一斉着信（APNs VoIP 対応） |
+| `supabase/migrations/` | スキーマ・RLS・取り合いを解決する RPC・審査と通報 |
+| `supabase/functions/` | LiveKit トークン発行、待機者への一斉着信（APNs VoIP / Expo push） |
+| `supabase/tests/` | マイグレーションを実 Postgres に当てて安全側の挙動を検証する |
 | `ocr/` | FastAPI + PaddleOCR。写真から日本語を読み順つきで返す |
 
 ## 設計で効いている判断
@@ -45,8 +46,44 @@ LiveKit のトークン発行時に `canPublishSources` を依頼者だけ `came
 信頼度 0.6 未満の行が混じったら「はっきり読めない部分があります」と先に言う。
 
 **画像もテキストも保存しない。**
-DB に持つのは「誰が・いつ・何秒繋がったか」だけ。依頼の本文も、映像も、OCR 結果も残さない。
+DB に持つのは「誰が・いつ・何秒繋がったか」と通報だけ。依頼の本文も、映像も、OCR 結果も残さない。
 薬袋・請求書・診断書が飛んでくる前提なので、保存した瞬間にそこが漏洩面になる。
+
+## 安全側の作り
+
+他人のカメラ映像が流れる以上、ここが本体と言っていい。
+
+**審査を通るまで待機列が見えない。**
+ボランティアは登録直後 `pending`。規約に同意し、かつ管理者が `approved` にするまで、
+待機中の依頼は RLS で1行も返らない。通知も飛ばない。
+
+**自己承認を列権限で封じている。**
+RLS は「どの行を触れるか」しか制御しないので、「自分の待機状態は更新できる」ポリシーがある限り
+`review_state = 'approved'` を自分で書き込めてしまう。
+`volunteer_status` と `profiles` は `revoke insert, update` してから列単位で grant し直し、
+審査に関わる列（`review_state` / `is_admin` / `is_blocked`）はサーバ側の security definer 関数からしか動かせない。
+
+**通報は通話直後にしか出さない。**
+設定の奥に置くと、嫌な思いをした人ほど辿り着けない。通話が終わると必ず一度この画面を通る。
+相手が誰かはサーバが通話記録から決める。クライアントに `reported_id` を選ばせると、
+無関係な人を通報できてしまうため。
+
+**ブロックは双方向に効く。**
+片方向だと、通報された側が相手を選んで取り続けられる。`blocked_between()` が
+どちらの向きのブロックも見て、`claim_help_request` と RLS と着信送信の3か所で弾く。
+
+**別々の3人から通報されると自動で停止する。**
+1人が連打しても止まらないよう、`count(distinct reporter_id)` で数える。
+
+### 最初の管理者を作る
+
+`is_admin` はクライアントから立てられないので、最初の1人だけ service role で入れる。
+
+```sql
+update profiles set is_admin = true where id = '<運営のユーザーID>';
+```
+
+以降はアプリから `review_volunteer(user_id, 'approved')` で承認できる。
 
 ## 動かす
 
@@ -68,7 +105,8 @@ supabase secrets set \
   LIVEKIT_API_SECRET=...
 ```
 
-VoIP push まで行く場合は追加で `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_BUNDLE_ID` / `APNS_PRIVATE_KEY`（.p8 の中身）。
+iOS の VoIP 着信を使う場合は追加で
+`APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_BUNDLE_ID` / `APNS_PRIVATE_KEY`（.p8 の中身）。
 
 時間切れの掃除は pg_cron から:
 
@@ -78,7 +116,7 @@ select cron.schedule('expire-requests', '* * * * *', $$select expire_stale_reque
 
 ### 2. アプリ
 
-Expo Go では動かない（LiveKit と CallKeep がネイティブモジュールのため）。dev client を焼く。
+Expo Go では動かない（LiveKit / CallKeep / PushKit がネイティブモジュールのため）。dev client を焼く。
 
 ```bash
 cd app
@@ -99,48 +137,64 @@ docker run -p 8080:8080 eyes-bridge-ocr
 `app/.env` に `EXPO_PUBLIC_OCR_URL=http://<ホスト>:8080` を足すと「機械に読ませる」が有効になる。
 未設定でも通話側は動く。
 
+## テスト
+
+マイグレーションを実際の PostgreSQL に当てて、安全側の挙動を確かめる。
+Supabase を立てなくても回る（`auth` スキーマと3つのロールだけ stub で作る）。
+
+```bash
+./supabase/tests/run.sh
+```
+
+一時クラスタを勝手に立てて捨てる。既存の DB を使う場合は `PGURL=postgres://... ./supabase/tests/run.sh`。
+
+確かめていること:
+
+* 未審査のボランティアに待機列が見えない / 依頼を取れない
+* 自分で自分を承認できない / 自分を管理者にできない（列権限）
+* 管理者でない人は他人を承認できない
+* 取り合いで勝つのは1人だけ（2人目は `ALREADY_TAKEN`）
+* ブロックした相手には依頼が見えない / 取れない
+* 無関係の人は通報できない / 通報テーブルへの直接 insert が塞がれている
+* 別々の3人から通報されると自動停止する（2人では止まらない）
+* 通報された本人に通報が見えない
+
 ## まだ塞いでいない穴
 
-- **iOS で「電話として鳴る」のは未完成。** Expo push（通常通知）までは動く。
-  アプリ終了状態から CallKit の着信画面を出すには PushKit の VoIP push が要る。
-  **サーバ側の送信処理は `supabase/functions/_shared/apns.ts` に実装済み**で、
-  `volunteer_status.push_kind` を `apns_voip` にすればそちらに流れる。
-  残っているのは端末側の `react-native-voip-push-notification` 導入で、
-  Expo config plugin が無いため `prebuild` 後のネイティブ編集になる。
-  Android は ConnectionService（selfManaged）で現状のまま鳴る。
-- **ボランティアの身元確認が無い。** 誰でも登録できて、誰でも他人のカメラ映像を見られる。
-  公開する前に、本人確認・通報導線・ブロックが必ず要る。
-- **通報とブロックが無い。** `help_requests` に当事者は残っているので、
-  通報テーブルを足して紐づければ実装できる形にはなっている。
+- **実機で一度も動かしていない。** ネイティブビルドが要るので、通話も着信も未検証。
+  音と映像が実際に通るか、VoIP push が鳴るかはここを通すまで分からない。
 - **react-native-callkeep は New Architecture で未検証。**
-  Expo SDK 57 は New Architecture が既定。`expo-doctor` が
+  Expo SDK 57 は New Architecture が既定で、`expo-doctor` が
   「Untested on New Architecture」と報告する。着信まわりが本番で
   一番壊れると痛い箇所なので、実機で最初に確かめるのはここ。
+- **承認の判断材料が無い。** 承認ゲートと権限は作ったが、
+  「何を見て approved にするか」は決めていない。
+  身分証の確認なり面談なりの運用を別途決める必要がある。
+  仕組みとしては `review_volunteer` を叩くところに繋げばいい。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
   日本語は iOS / Android とも標準 TTS がオフラインで実用水準にある。
   声質にこだわる場合はサーバ側で VOICEVOX か Piper を挟む。
 
-## ライセンスの注意
-
-依存している OSS はすべて Apache-2.0 / MIT / ISC。
-ただし OCR を日本語特化に差し替える場合、YomiToku は CC BY-NC-SA 系なので商用利用の可否を確認すること。
-
 ## 検証したこと / していないこと
 
 済んでいるもの:
 
-* `tsc --noEmit` が通る（LiveKit・Supabase・CallKeep の型と実際に突き合わせた結果）
-* `expo-doctor` の config schema チェック
+* `supabase/tests/run.sh` 17件（実 PostgreSQL 17 に4本のマイグレーションを適用して実行）
+* `tsc --noEmit`（TypeScript 6）が通る
+* `expo-doctor` 21項目中20項目
 * OCR サーバの Python 構文
-* SQL の構造チェック（実 Postgres への適用はしていない）
 
 していないもの:
 
-* **実機での通話。** ネイティブビルドが要るので未実施。
-  実際に音と映像が通るかはここを通すまで分からない。
+* **実機での通話と着信。**
 * **Edge Function の実行。** Deno 未導入のため esbuild による構文確認のみ。
   `npm:` 指定の解決は `supabase functions serve` で確かめること。
 * **OCR の精度。** PaddleOCR の日本語モデルを実際の薬袋やレシートに
   当てていない。読み順の並べ替えロジックは実データで詰める必要がある。
+
+## ライセンスの注意
+
+依存している OSS はすべて Apache-2.0 / MIT / ISC。
+ただし OCR を日本語特化に差し替える場合、YomiToku は CC BY-NC-SA 系なので商用利用の可否を確認すること。

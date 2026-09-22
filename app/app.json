@@ -17,9 +17,6 @@
           "voip",
           "remote-notification"
         ]
-      },
-      "entitlements": {
-        "com.apple.developer.pushkit.unrestricted-voip": true
       }
     },
     "android": {
@@ -44,6 +41,7 @@
           "iosSupportsVideo": true
         }
       ],
+      "expo-voip-push-notification",
       "expo-dev-client"
     ],
     "extra": {

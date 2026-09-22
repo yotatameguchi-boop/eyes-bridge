@@ -64,16 +64,33 @@ Deno.serve(serveJson(async (req) => {
     { auth: { persistSession: false } },
   );
 
+  // 依頼者がブロックした相手／依頼者をブロックした相手は鳴らさない。
+  // RLS 側でも取得を弾いているが、通知が飛ぶだけで相手には
+  // 「誰かが助けを求めた」と伝わってしまうので、送信段階で落とす。
+  const { data: blockRows } = await admin
+    .from("blocks")
+    .select("blocker_id, blocked_id")
+    .or(`blocker_id.eq.${request.requester_id},blocked_id.eq.${request.requester_id}`);
+
+  const excluded = new Set(
+    (blockRows ?? []).map((b: { blocker_id: string; blocked_id: string }) =>
+      b.blocker_id === request.requester_id ? b.blocked_id : b.blocker_id
+    ),
+  );
+
   const { data: volunteers } = await admin
     .from("volunteer_status")
     .select("user_id, push_token, push_kind")
     .eq("is_available", true)
     .eq("language", request.language)
+    // 審査を通っていない人には依頼の存在自体を知らせない
+    .eq("review_state", "approved")
+    .not("agreed_to_terms_at", "is", null)
     .not("push_token", "is", null)
     .order("last_seen_at", { ascending: false })
     .limit(FANOUT_LIMIT);
 
-  const targets = (volunteers ?? []) as Target[];
+  const targets = ((volunteers ?? []) as Target[]).filter((t) => !excluded.has(t.user_id));
   const voip = targets.filter((t) => t.push_kind === "apns_voip");
   const expo = targets.filter((t) => t.push_kind !== "apns_voip");
 
