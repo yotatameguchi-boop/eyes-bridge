@@ -117,7 +117,7 @@ export default function App() {
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <SafeAreaView style={styles.shell}>
-      <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
+      <StatusBar barStyle="light-content" />
       {children}
     </SafeAreaView>
   );

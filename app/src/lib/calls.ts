@@ -6,7 +6,7 @@
 //   ロック画面からでも、運転中でも、片手で取れる。
 //   そして「取る / 拒否」の2択は、OS 側が完全にアクセシブルにしてある。
 import { Platform } from "react-native";
-import RNCallKeep from "react-native-callkeep";
+import RNCallKeep, { CONSTANTS } from "react-native-callkeep";
 import * as Crypto from "expo-crypto";
 
 type Handlers = {
@@ -91,12 +91,13 @@ export function stopRinging(requestId: string, reason: "taken" | "cancelled" = "
   const callUUID = requestToCall.get(requestId);
   if (!callUUID) return;
 
-  // MissedCall にすると履歴に不在着信が残る。
-  // 「他の人が対応した」だけなので RemoteEnded で静かに消す。
+  // MISSED にすると履歴に不在着信が残ってしまう。
+  // 「他のボランティアが対応した」は ANSWERED_ELSEWHERE が正確で、
+  // OS 側も不在着信として記録しない。
   RNCallKeep.reportEndCallWithUUID(
     callUUID,
-    reason === "taken" ? RNCallKeep.CONSTANTS.END_CALL_REASONS.REMOTE_ENDED
-                       : RNCallKeep.CONSTANTS.END_CALL_REASONS.MISSED,
+    reason === "taken" ? CONSTANTS.END_CALL_REASONS.ANSWERED_ELSEWHERE
+                       : CONSTANTS.END_CALL_REASONS.MISSED,
   );
   forget(requestId);
 }

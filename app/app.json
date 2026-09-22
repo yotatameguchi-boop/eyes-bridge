@@ -6,14 +6,17 @@
     "orientation": "portrait",
     "scheme": "eyesbridge",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "bundleIdentifier": "app.eyesbridge.client",
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "見てほしいものを映すためにカメラを使います。映像は録画されません。",
         "NSMicrophoneUsageDescription": "ボランティアと話すためにマイクを使います。",
-        "UIBackgroundModes": ["audio", "voip", "remote-notification"]
+        "UIBackgroundModes": [
+          "audio",
+          "voip",
+          "remote-notification"
+        ]
       },
       "entitlements": {
         "com.apple.developer.pushkit.unrestricted-voip": true

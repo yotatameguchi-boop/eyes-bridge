@@ -112,6 +112,10 @@ docker run -p 8080:8080 eyes-bridge-ocr
   公開する前に、本人確認・通報導線・ブロックが必ず要る。
 - **通報とブロックが無い。** `help_requests` に当事者は残っているので、
   通報テーブルを足して紐づければ実装できる形にはなっている。
+- **react-native-callkeep は New Architecture で未検証。**
+  Expo SDK 57 は New Architecture が既定。`expo-doctor` が
+  「Untested on New Architecture」と報告する。着信まわりが本番で
+  一番壊れると痛い箇所なので、実機で最初に確かめるのはここ。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
@@ -122,3 +126,21 @@ docker run -p 8080:8080 eyes-bridge-ocr
 
 依存している OSS はすべて Apache-2.0 / MIT / ISC。
 ただし OCR を日本語特化に差し替える場合、YomiToku は CC BY-NC-SA 系なので商用利用の可否を確認すること。
+
+## 検証したこと / していないこと
+
+済んでいるもの:
+
+* `tsc --noEmit` が通る（LiveKit・Supabase・CallKeep の型と実際に突き合わせた結果）
+* `expo-doctor` の config schema チェック
+* OCR サーバの Python 構文
+* SQL の構造チェック（実 Postgres への適用はしていない）
+
+していないもの:
+
+* **実機での通話。** ネイティブビルドが要るので未実施。
+  実際に音と映像が通るかはここを通すまで分からない。
+* **Edge Function の実行。** Deno 未導入のため esbuild による構文確認のみ。
+  `npm:` 指定の解決は `supabase functions serve` で確かめること。
+* **OCR の精度。** PaddleOCR の日本語モデルを実際の薬袋やレシートに
+  当てていない。読み順の並べ替えロジックは実データで詰める必要がある。
