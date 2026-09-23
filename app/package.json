@@ -8,7 +8,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "prebuild": "expo prebuild --clean",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "node --test src/lib/*.test.ts"
   },
   "dependencies": {
     "@config-plugins/react-native-callkeep": "^14.0.2",
@@ -36,6 +37,7 @@
     "react-native-url-polyfill": "^4.0.0"
   },
   "devDependencies": {
+    "@types/node": "^24.13.6",
     "@types/react": "~19.2.4",
     "typescript": "~6.0.3"
   }

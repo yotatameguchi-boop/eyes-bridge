@@ -182,7 +182,9 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
         />
       </View>
 
-      <Text style={styles.counter} accessibilityLiveRegion="polite">
+      {/* live region にしない。待機の切り替えは notifyStateChange で、
+          新しい依頼は OS の着信画面で伝えている。重ねると2回読まれる。 */}
+      <Text style={styles.counter}>
         {!available
           ? "待機をオンにすると依頼が届きます"
           : queue.length === 0

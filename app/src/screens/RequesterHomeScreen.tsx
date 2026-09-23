@@ -3,7 +3,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { BigButton } from "../components/BigButton";
 import { createHelpRequest, endRequest, watchRequest, type QueueHandle } from "../lib/requests";
 import { watchAvailableCount } from "../lib/presence";
-import { notifyStateChange, speak } from "../lib/a11y";
+import { notifyStateChange, say } from "../lib/a11y";
 import type { HelpRequest } from "../lib/supabase";
 import { colors, space, type as typeScale } from "../theme";
 
@@ -43,7 +43,7 @@ export function RequesterHomeScreen({ onConnected, onReadAloud }: Props) {
   }, [waiting?.id]);
 
   useEffect(() => {
-    if (elapsed > 0 && elapsed % 20 === 0) void speak("まだ探しています");
+    if (elapsed > 0 && elapsed % 20 === 0) void say("まだ探しています");
   }, [elapsed]);
 
   const stopWatching = useCallback(() => {
@@ -94,7 +94,10 @@ export function RequesterHomeScreen({ onConnected, onReadAloud }: Props) {
   if (waiting) {
     return (
       <View style={styles.root}>
-        <View style={styles.status} accessibilityLiveRegion="polite">
+        {/* live region にしない。秒数が毎秒変わるので、Android の TalkBack が
+            「1秒、2秒…」と毎秒読み上げて他の声をかき消す。
+            経過は20秒ごとの「まだ探しています」で伝えている。 */}
+        <View style={styles.status}>
           <Text style={styles.statusTitle} accessibilityRole="header">
             探しています
           </Text>
@@ -117,7 +120,10 @@ export function RequesterHomeScreen({ onConnected, onReadAloud }: Props) {
 
   return (
     <View style={styles.root}>
-      <Text style={styles.availability} accessibilityLiveRegion="polite">
+      {/* live region にしない。待機人数は人の出入りのたびに変わり、
+          そのたびに読み上げると操作中の声に割り込む。画面の先頭に置いてあるので、
+          知りたいときは指でなぞれば聞ける。 */}
+      <Text style={styles.availability}>
         {availableCount === null
           ? "待機人数を確認中"
           : availableCount === 0

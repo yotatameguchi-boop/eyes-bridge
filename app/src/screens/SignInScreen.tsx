@@ -119,7 +119,9 @@ export function SignInScreen() {
       )}
 
       {error ? (
-        <Text style={styles.error} accessibilityLiveRegion="assertive" role="alert">
+        // live region にしない。同じ内容を notifyStateChange で既に伝えており、
+        // 両方あると Android で2回読まれる。
+        <Text style={styles.error} role="alert">
           {error}
         </Text>
       ) : null}

@@ -2,28 +2,68 @@
 //
 // 視覚UIだと「繋がりました」は色と文字で分かるが、
 // スクリーンリーダー利用者には何も起きていないのと同じになる。
-// 状態が変わる場所では必ず「読み上げ」と「振動」の両方を出す。
-// 音だけだと騒がしい場所で落ち、振動だけだと理由が分からないため。
+// 状態が変わる場所では必ず「声」と「振動」の両方を出す。
+// 声だけだと騒がしい場所で落ち、振動だけだと理由が分からないため。
+//
+// 声は「1回だけ」出す。スクリーンリーダーを使っている人にはその声で、
+// 使っていない人にはアプリの声で。振り分けは speaker.ts（テスト付き）。
+import { useEffect, useState } from "react";
 import { AccessibilityInfo, Platform } from "react-native";
 import * as Haptics from "expo-haptics";
 import * as Speech from "expo-speech";
+import { createSpeaker } from "./speaker";
 
-/** スクリーンリーダーに割り込んで読ませる。 */
-export function announce(message: string) {
-  AccessibilityInfo.announceForAccessibility(message);
-}
+const speaker = createSpeaker({
+  isScreenReaderEnabled: () => AccessibilityInfo.isScreenReaderEnabled(),
+  onScreenReaderChanged: (listener) => {
+    AccessibilityInfo.addEventListener("screenReaderChanged", listener);
+  },
+  announce: (message) => {
+    if (Platform.OS === "ios") {
+      // ボタンを押した直後は VoiceOver がボタン名を読んでいる。
+      // 割り込ませると知らせのほうが消えることがあるので、後ろに並べる。
+      AccessibilityInfo.announceForAccessibilityWithOptions(message, { queue: true });
+    } else {
+      AccessibilityInfo.announceForAccessibility(message);
+    }
+  },
+  speak: (message, rate) => {
+    Speech.speak(message, { language: "ja-JP", rate, pitch: 1.0 });
+  },
+  stopSpeaking: () => {
+    void Speech.stop();
+  },
+});
+
+/** 短い知らせを1回だけ伝える（声のみ。振動が要るなら notifyStateChange）。 */
+export const say = speaker.say;
 
 /**
- * スクリーンリーダーを使っていない弱視の人にも届くよう、
- * 実際に喋る。announce はリーダー未使用だと無音のため。
+ * 長い文章を読む。スクリーンリーダー使用中は focus() でその文章の要素に
+ * フォーカスを移し、利用者の声と速さで読ませる。未使用ならアプリが読む。
  */
-export async function speak(message: string, opts?: { interrupt?: boolean }) {
-  if (opts?.interrupt !== false) Speech.stop();
-  Speech.speak(message, { language: "ja-JP", rate: 1.0, pitch: 1.0 });
-}
+export const readLongText = speaker.readLong;
 
-export function stopSpeaking() {
-  Speech.stop();
+export const stopSpeaking = speaker.stop;
+export const usingScreenReader = speaker.usingScreenReader;
+
+/** 画面の出し分け用。スクリーンリーダーの切り替えにも追従する。 */
+export function useScreenReader(): boolean {
+  const [on, setOn] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void usingScreenReader().then((value) => {
+      if (alive) setOn(value);
+    });
+    const sub = AccessibilityInfo.addEventListener("screenReaderChanged", setOn);
+    return () => {
+      alive = false;
+      sub.remove();
+    };
+  }, []);
+
+  return on;
 }
 
 export const feedback = {
@@ -35,18 +75,13 @@ export const feedback = {
   failed: () => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning),
 };
 
-/** 状態変化を三重（読み上げ・発話・振動）で伝える。 */
+/** 状態変化を、振動と声（1回だけ）で伝える。 */
 export async function notifyStateChange(
   message: string,
   kind: keyof typeof feedback = "progress",
 ) {
   await feedback[kind]().catch(() => {});
-  announce(message);
-  await speak(message);
-}
-
-export async function isScreenReaderOn(): Promise<boolean> {
-  return AccessibilityInfo.isScreenReaderEnabled();
+  await say(message);
 }
 
 /** iOS は VoiceOver、Android は TalkBack。文言を出し分けるときに使う。 */
