@@ -18,7 +18,8 @@ RN（callkeep + PushKit で OS の着信画面）
 | `supabase/migrations/` | スキーマ・RLS・取り合いを解決する RPC・審査と通報 |
 | `supabase/functions/` | LiveKit トークン発行、待機者への一斉着信（APNs VoIP / Expo push） |
 | `supabase/tests/` | マイグレーションを実 Postgres に当てて安全側の挙動を検証する |
-| `ocr/` | FastAPI + PaddleOCR。写真から日本語を読み順つきで返す |
+| `admin/` | 運営画面（Vite + React）。本人確認の審査・ボランティア管理・通報対応 |
+| `ocr/` | FastAPI + PaddleOCR。読み上げと、本人確認書類の自動チェック |
 | `docker/`, `docker-compose.yml` | 手元で DB / LiveKit / OCR を立てる |
 
 ## 設計で効いている判断
@@ -74,6 +75,35 @@ DB に持つのは「誰が・いつ・何秒繋がったか」と通報だけ�
 `review_volunteer(..., 'approved')` は本人確認済みでないと `IDENTITY_NOT_VERIFIED` で弾く。
 ただし `suspended` / `rejected` は本人確認なしでも通す。問題が起きたときに
 止められないと本末転倒なので。
+
+**自動チェックは材料であって判定ではない。**
+書類の真贋を機械が断定できる前提で作ると、見逃したときに誰も気づかない仕組みになる。
+`ocr/inspection.py` が出すのは旗（flag）だけで、承認・却下を決めるのは人。
+運営画面では旗ごとに「これ単独で却下していいか」を hard / soft / weak で示している。
+
+見ているもの:
+
+| 旗 | 強さ | 意味 |
+|---|---|---|
+| `expired` | hard | 券面から読んだ有効期限が過去 |
+| `unreadable` | hard | 暗い・ぶれ・小さい。偽造以前に審査できない |
+| `keywords_missing` | soft | その書類にあるはずの語が1つも無い |
+| `duplicate_document` | soft | 同じ書類が別のアカウントでも使われている |
+| `no_face_in_document` | soft | 顔写真のある面を撮っていない疑い |
+| `possible_screen_capture` | weak | モアレが強い。布や網戸ごしでも上がる |
+| `expiry_not_found` | weak | 期限を読めなかった。記載位置は書類ごとに違う |
+
+**使い回しの検出は知覚ハッシュ（pHash）で行う。**
+完全一致だけを見ると、撮り直し・トリミング・圧縮で別物になってすり抜ける。
+DCT ベースの 64bit ハッシュを取り、ハミング距離6以内を「同じ書類」とみなす。
+ハッシュからは元画像を復元できないので、**画像を消したあとも残せる**。
+本物の免許証を他人から借りている場合もここに出る。
+
+**やっていないこと。**
+券面の顔写真と自撮りが同一人物かの照合は**していない**。
+生体データの保存を伴うため、入れるなら同意の取り方と取り扱いを別途設計する必要がある。
+ホログラム・透かし・券面の材質の検証も、平面の写真からは原理的に見えないのでやらない。
+どちらも人が目で見る前提。
 
 **書類の画像は審査が済んだら消す。**
 承認なら7日、却下なら30日（問い合わせに答えるため）で `purge_after` が立ち、
@@ -183,7 +213,22 @@ npx expo prebuild --clean
 npx expo run:ios       # または run:android
 ```
 
-### 3. OCR サーバ（任意）
+### 3. 運営画面
+
+```bash
+cd admin
+cp .env.example .env   # Supabase の URL と anon key を入れる
+npm install
+npm run dev            # http://localhost:5180
+```
+
+service role キーはフロントに置かない。運営も普通のユーザーとしてログインし、
+`is_admin` で通す。画面を隠すのは親切であって守りではなく、実際の防御は
+RLS と `is_admin` を見る RPC 側にある。
+
+最初の管理者の作り方は上の「最初の管理者を作る」を参照。
+
+### 4. OCR サーバ（任意）
 
 ```bash
 cd ocr
@@ -193,6 +238,16 @@ docker run -p 8080:8080 eyes-bridge-ocr
 
 `app/.env` に `EXPO_PUBLIC_OCR_URL=http://<ホスト>:8080` を足すと「機械に読ませる」が有効になる。
 未設定でも通話側は動く。
+
+本人確認の自動チェックを使う場合は、OCR サーバに `INSPECT_TOKEN` を設定し、
+同じ値を Edge Function 側にも渡す:
+
+```bash
+supabase secrets set OCR_URL=http://<ホスト>:8080 INSPECT_TOKEN=<共有する秘密>
+```
+
+`INSPECT_TOKEN` が未設定だと `/inspect-document` は 503 で閉じる。
+本人確認書類が飛んでくる口を、設定し忘れで誰でも叩ける状態にしないため。
 
 ## テスト
 
@@ -205,7 +260,7 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 
 一時クラスタを勝手に立てて捨てる。既存の DB を使う場合は `PGURL=postgres://... ./supabase/tests/run.sh`。
 
-確かめていること（37件）:
+確かめていること（51件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -221,6 +276,10 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 * 審査待ちを二重に積めない
 * 本人確認書類は本人と運営にしか見えない / 置けない
 * 画像を消しても審査の結果は残る
+* 一般ユーザーには自分の行しか見えず、運営だけが全体を見られる
+* 自動チェックは service role しか書けない（運営でも本人でも直接書けない）
+* 別アカウントのほぼ同じ書類に `duplicate_document` が立ち、別物では立たない
+* 通報を処理済みにできるのは運営だけ
 
 ## まだ塞いでいない穴
 
@@ -230,10 +289,12 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
   Expo SDK 57 は New Architecture が既定で、`expo-doctor` が
   「Untested on New Architecture」と報告する。着信まわりが本番で
   一番壊れると痛い箇所なので、実機で最初に確かめるのはここ。
-- **運営が書類を見る画面が無い。** 提出と権限はできているが、
-  承認する側は今のところ SQL（`review_identity`）を直接叩く必要がある。
-- **書類の真贋は見ていない。** 人が目で見る前提の作り。
-  偽造の検知や、書類の顔写真と自撮りの照合は自動化していない。
+- **運営画面をブラウザで表示していない。** 型チェックとビルドは通っているが、
+  実際に描画して操作したわけではない。
+- **自動チェックを本物の書類で試していない。** モアレの閾値（40）も
+  OCR の信頼度の下限（0.6）も、実データで詰めていない仮の値。
+- **券面の顔写真と自撮りの照合はしていない。** 上の「やっていないこと」を参照。
+- **OCR サーバのコンテナを起動できていない。** イメージのビルドが長く、未完了。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
@@ -244,7 +305,10 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 
 済んでいるもの:
 
-* `supabase/tests/run.sh` 37件（実 PostgreSQL 17 に6本のマイグレーションを適用して実行）
+* `supabase/tests/run.sh` 51件（実 PostgreSQL 17 にマイグレーション7本を適用して実行）
+  テストファイルごとに DB を作り直すので、実行順で結果が変わらない
+* `docker compose up -d db livekit` が上がり、コンテナの DB に対してもテストが通る
+* 運営画面の `npm run build`（TypeScript の型チェック込み）
 * `tsc --noEmit`（TypeScript 6）が通る
 * `expo-doctor` 21項目中20項目
 * OCR サーバの Python 構文

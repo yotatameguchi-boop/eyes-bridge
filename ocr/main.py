@@ -16,10 +16,12 @@ import os
 from dataclasses import dataclass
 
 import numpy as np
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps
 from pydantic import BaseModel
+
+from inspection import Inspection, inspect as inspect_document
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("ocr")
@@ -45,6 +47,12 @@ class OcrResponse(BaseModel):
     text: str
     blocks: list[Block]
     engine: str
+
+
+class InspectResponse(BaseModel):
+    flags: list[str]
+    details: dict
+    phash: str | None
 
 
 @dataclass
@@ -162,3 +170,59 @@ async def ocr(image: UploadFile = File(...)) -> OcrResponse:
         blocks=[Block(text=l.text, confidence=round(l.confidence, 3)) for l in lines],
         engine="paddleocr-japan",
     )
+
+
+# --------------------------------------------------------------- 本人確認
+# 書類の自動チェック。人が審査するための材料を出すだけで、
+# ここで承認・却下は決めない。
+#
+# 呼べるのは inspect-identity（Edge Function）だけ。
+# 本人確認書類が飛んでくる口を、誰でも叩ける状態にしない。
+INSPECT_TOKEN = os.environ.get("INSPECT_TOKEN")
+
+
+@app.post("/inspect-document", response_model=InspectResponse)
+async def inspect_endpoint(
+    kind: str = Form(...),
+    front: UploadFile = File(...),
+    selfie: UploadFile | None = File(None),
+    x_inspect_token: str | None = Header(None),
+) -> InspectResponse:
+    # 未設定なら開けない。設定し忘れを「誰でも通る」で吸収しない。
+    if not INSPECT_TOKEN:
+        raise HTTPException(status_code=503, detail="INSPECT_NOT_CONFIGURED")
+    if x_inspect_token != INSPECT_TOKEN:
+        raise HTTPException(status_code=403, detail="BAD_INSPECT_TOKEN")
+
+    front_raw = await front.read()
+    if not front_raw:
+        raise HTTPException(status_code=400, detail="EMPTY_IMAGE")
+    if len(front_raw) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
+
+    front_image = load_image(front_raw)
+
+    selfie_image = None
+    if selfie is not None:
+        selfie_raw = await selfie.read()
+        if selfie_raw:
+            if len(selfie_raw) > MAX_BYTES:
+                raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
+            selfie_image = load_image(selfie_raw)
+        del selfie_raw
+
+    lines = extract(front_image)
+
+    result: Inspection = inspect_document(
+        kind=kind,
+        front=front_image,
+        selfie=selfie_image,
+        texts=[line.text for line in lines],
+        confidences=[line.confidence for line in lines],
+    )
+
+    # 券面に書かれている内容は返さない。
+    # 氏名も住所も、こちらで持つ理由が無い。
+    del front_raw, front_image, selfie_image, lines
+
+    return InspectResponse(flags=result.flags, details=result.details, phash=result.phash)

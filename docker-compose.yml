@@ -56,6 +56,9 @@ services:
       - "8080:8080"
     environment:
       ALLOWED_ORIGINS: "*"
+      # 本人確認書類が飛んでくる口なので、未設定だと 503 で閉じる。
+      # 手元用の固定値。本番では必ず変える。
+      INSPECT_TOKEN: "${INSPECT_TOKEN:-local-dev-inspect-token}"
     healthcheck:
       # モデルの初期化が終わるまで数十秒かかる
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]

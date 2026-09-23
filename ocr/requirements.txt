@@ -2,6 +2,8 @@ fastapi==0.118.0
 uvicorn[standard]==0.37.0
 python-multipart==0.0.20
 pillow==11.3.0
+# 顔検出・DCT・FFT に使う。paddleocr 経由でも入るが依存を明示する
+opencv-python-headless==4.12.0.88
 numpy==2.2.6
 # 日本語を含む多言語 OCR。CPU でも実用速度が出る
 paddleocr==3.2.0

@@ -103,7 +103,7 @@ export async function submitIdentity(
     ? await upload(userId, shots.backBase64, "back")
     : null;
 
-  const { error } = await supabase.rpc("submit_identity", {
+  const { data, error } = await supabase.rpc("submit_identity", {
     p_kind: kind,
     p_front: frontPath,
     p_selfie: selfiePath,
@@ -111,4 +111,13 @@ export async function submitIdentity(
   });
 
   if (error) throw error;
+
+  // 自動チェックは待たない。失敗しても提出は成立している。
+  // 運営の画面からいつでも実行し直せる。
+  const verificationId = (data as { id?: string } | null)?.id;
+  if (verificationId) {
+    supabase.functions
+      .invoke("inspect-identity", { body: { verificationId } })
+      .catch((e) => console.warn("inspect-identity failed", e));
+  }
 }
