@@ -234,16 +234,34 @@ RLS と `is_admin` を見る RPC 側にある。
 docker compose up -d ocr    # http://localhost:8081
 ```
 
-モデル（PP-OCRv5、数百MB）はイメージに焼いていない。
-ビルド時に落とすとイメージのビルドが20分を超え、取得元が詰まると
-キャッシュの効かない層でビルドごと止まるため。
-代わりに `/root/.paddlex` を volume に逃がしてあるので、
-**最初の1リクエストだけ待たされ、以降の再起動では落とし直さない**。
+**モデルは mobile 系（`PP-OCRv5_mobile_det` / `PP-OCRv5_mobile_rec`）を既定にしている。**
+`lang="japan"` を渡すと PaddleOCR は server 系（数百MB）を選び、
+実際に取得が詰まってビルドが25分走って落ちた。mobile 系は一式 **35MB**。
+
+日本語専用の rec モデルは存在せず、`lang="japan"` も汎用の PP-OCRv5 rec を
+使っているだけなので、mobile に落としても日本語は読める（下の結合テストで確認済み）。
+落ちるのは精度のほうで、上げたいときは環境変数で server 系に戻せる:
+
+```bash
+OCR_DET_MODEL=PP-OCRv5_server_det OCR_REC_MODEL=PP-OCRv5_server_rec docker compose up -d ocr
+```
+
+モデルはイメージに焼かず、`/root/.paddlex` を volume に逃がしてある。
+**最初の1リクエストだけ待たされ（手元の回線で約9分）、以降は 0.3秒前後**。
+再起動しても落とし直さない。
 
 自動チェックの単体テスト（モデル不要の部分）:
 
 ```bash
 docker compose exec -T ocr python - < ocr/test_inspection.py
+```
+
+実モデルを通す結合テスト（日本語の見本画像。フォントはテストのときだけ持ち込む）:
+
+```bash
+docker cp "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc" eyes-bridge-ocr-1:/tmp/jp.ttc
+docker compose exec -T ocr python - < ocr/test_japanese_sample.py
+docker compose exec -T ocr rm -f /tmp/jp.ttc
 ```
 
 `app/.env` に `EXPO_PUBLIC_OCR_URL=http://<ホスト>:8081` を足すと「機械に読ませる」が有効になる。
@@ -304,8 +322,9 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 - **自動チェックを本物の書類で試していない。** モアレの閾値（40）も
   OCR の信頼度の下限（0.6）も、実データで詰めていない仮の値。
 - **券面の顔写真と自撮りの照合はしていない。** 上の「やっていないこと」を参照。
-- **本物の書類で試していない。** OCR の読み取り精度も、モアレの閾値（40）も、
-  OCR 信頼度の下限（0.6）も、実データで詰めていない仮の値。
+- **本物の書類で試していない。** 見本画像（平らな背景にフォントで描いたもの）は
+  読めたが、実物の撮影写真は反射・傾き・地紋があり条件がまったく違う。
+  モアレの閾値（40）も OCR 信頼度の下限（0.6）も、実データで詰めていない仮の値。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
@@ -326,6 +345,9 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 * `ocr/test_inspection.py` 15件（コンテナ内で実行）
   知覚ハッシュの安定性と弁別、元号・西暦の日付読み取り、
   生年月日と有効期限の取り違え防止、旗の判定
+* `ocr/test_japanese_sample.py` 9件（mobile 系の実モデルで実行）
+  日本語の見本画像を8行すべて読めること、有効期限を
+  生年月日・交付日と取り違えないこと、期限切れに `expired` が立つこと
 * `tsc --noEmit`（TypeScript 6）が通る
 * `expo-doctor` 21項目中20項目
 * OCR サーバの Python 構文

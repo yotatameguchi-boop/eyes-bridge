@@ -61,6 +61,10 @@ services:
       # 本人確認書類が飛んでくる口なので、未設定だと 503 で閉じる。
       # 手元用の固定値。本番では必ず変える。
       INSPECT_TOKEN: "${INSPECT_TOKEN:-local-dev-inspect-token}"
+      # 既定は mobile 系。精度を上げたいときだけ server 系に戻す
+      # （そのぶんモデルが数百MBになり、初回取得が長い）
+      OCR_DET_MODEL: "${OCR_DET_MODEL:-PP-OCRv5_mobile_det}"
+      OCR_REC_MODEL: "${OCR_REC_MODEL:-PP-OCRv5_mobile_rec}"
     volumes:
       # モデルはイメージに焼かず、ここに残す。
       # 初回の1リクエストだけ待たされるが、以降の再起動では落とし直さない。

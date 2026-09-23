@@ -29,6 +29,19 @@ log = logging.getLogger("ocr")
 MAX_BYTES = 12 * 1024 * 1024
 MAX_EDGE = 2000  # これ以上大きくしても精度は上がらず、CPU時間だけ伸びる
 
+# モデルは mobile 系を既定にする。
+#
+# lang="japan" を渡すと PaddleOCR は PP-OCRv5_server_det /
+# PP-OCRv5_server_rec を選ぶ。これが数百MBあり、取得に失敗すると
+# 起動もビルドも止まる（実際に25分待って落ちた）。
+#
+# 日本語専用の rec モデルは存在せず、lang="japan" も汎用の
+# PP-OCRv5 rec を使っているだけなので、mobile 版に落としても
+# 「日本語が読めなくなる」ことはない。落ちるのは精度で、
+# 上げたくなったら環境変数で server 系に戻せる。
+DET_MODEL = os.environ.get("OCR_DET_MODEL", "PP-OCRv5_mobile_det")
+REC_MODEL = os.environ.get("OCR_REC_MODEL", "PP-OCRv5_mobile_rec")
+
 app = FastAPI(title="eyes-bridge OCR")
 app.add_middleware(
     CORSMiddleware,
@@ -73,13 +86,16 @@ def engine():
     if _engine is None:
         from paddleocr import PaddleOCR
 
+        # lang は渡さない。渡すとモデル名の指定より優先されて
+        # server 系に引き戻される。
         _engine = PaddleOCR(
-            lang="japan",
+            text_detection_model_name=DET_MODEL,
+            text_recognition_model_name=REC_MODEL,
             use_doc_orientation_classify=True,  # 横に倒して撮られた写真を起こす
             use_doc_unwarping=False,            # 手持ち撮影では歪み補正が裏目に出やすい
-            use_textline_orientation=True,      # 縦書き対応
+            use_textline_orientation=True,      # 上下が反転した行を起こす
         )
-        log.info("PaddleOCR ready")
+        log.info("PaddleOCR ready (det=%s rec=%s)", DET_MODEL, REC_MODEL)
     return _engine
 
 
