@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { BigButton } from "../components/BigButton";
+import { IdentitySubmitScreen } from "./IdentitySubmitScreen";
 import { agreeToTerms, type VolunteerStanding } from "../lib/safety";
 import { notifyStateChange } from "../lib/a11y";
 import { colors, space, type as typeScale } from "../theme";
@@ -8,10 +9,18 @@ import { colors, space, type as typeScale } from "../theme";
 // 審査を通るまでは待機画面に入れない。
 // 「登録したのに何も起きない」と黙って放置されるのが一番離脱するので、
 // 今どの段階にいて次に何が起きるかを必ず書く。
+// 待機できるまでの関門は3つ。順番を入れ替えない。
+//   1. 規約に同意する
+//   2. 本人確認を出す
+//   3. 運営が承認する
+// 本人確認を先に求めると、何のために書類を出すのか分からないまま
+// 免許証を撮らせることになる。先に守ってほしいことを読ませる。
 export function VolunteerGateScreen({
+  userId,
   standing,
   onRefresh,
 }: {
+  userId: string;
   standing: VolunteerStanding;
   onRefresh: () => void;
 }) {
@@ -58,10 +67,22 @@ export function VolunteerGateScreen({
     );
   }
 
+  if (standing.identityState === null || standing.identityState === "rejected") {
+    return (
+      <IdentitySubmitScreen
+        userId={userId}
+        rejectReason={
+          standing.identityState === "rejected" ? standing.identityRejectReason : undefined
+        }
+        onSubmitted={onRefresh}
+      />
+    );
+  }
+
   const message = {
     pending: {
       title: "審査待ちです",
-      body: "運営が確認しています。承認されるとこの画面が待機画面に変わります。",
+      body: "本人確認の書類を運営が確認しています。承認されるとこの画面が待機画面に変わります。",
     },
     approved: { title: "承認されています", body: "画面を更新してください。" },
     suspended: {

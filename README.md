@@ -19,6 +19,7 @@ RN（callkeep + PushKit で OS の着信画面）
 | `supabase/functions/` | LiveKit トークン発行、待機者への一斉着信（APNs VoIP / Expo push） |
 | `supabase/tests/` | マイグレーションを実 Postgres に当てて安全側の挙動を検証する |
 | `ocr/` | FastAPI + PaddleOCR。写真から日本語を読み順つきで返す |
+| `docker/`, `docker-compose.yml` | 手元で DB / LiveKit / OCR を立てる |
 
 ## 設計で効いている判断
 
@@ -53,9 +54,31 @@ DB に持つのは「誰が・いつ・何秒繋がったか」と通報だけ�
 
 他人のカメラ映像が流れる以上、ここが本体と言っていい。
 
+**待機できるまでの関門は3つ。** 規約への同意 → 本人確認 → 運営の承認。
+順番は入れ替えない。本人確認を先に求めると、何のために書類を出すのか
+分からないまま免許証を撮らせることになる。
+
 **審査を通るまで待機列が見えない。**
-ボランティアは登録直後 `pending`。規約に同意し、かつ管理者が `approved` にするまで、
+ボランティアは登録直後 `pending`。3つの関門を全部通るまで、
 待機中の依頼は RLS で1行も返らない。通知も飛ばない。
+
+**個人番号（マイナンバー）は保存しない。**
+番号法20条により、個人番号の収集・保管は社会保障・税・災害対策の事務に限られる。
+ボランティアのマッチングはどれにも当たらないので、取得した時点で違法になる。
+マイナンバーカードは本人確認書類としては使えるため、**表面だけを受け取り、
+個人番号が印字された裏面はアプリ側でも DB 制約でも拒否する**。
+免許証番号などの書類番号も保存しない。要るのは「本人かどうか」であって番号ではなく、
+持たなければ漏れない。
+
+**本人確認が済むまでボランティアを承認できない。**
+`review_volunteer(..., 'approved')` は本人確認済みでないと `IDENTITY_NOT_VERIFIED` で弾く。
+ただし `suspended` / `rejected` は本人確認なしでも通す。問題が起きたときに
+止められないと本末転倒なので。
+
+**書類の画像は審査が済んだら消す。**
+承認なら7日、却下なら30日（問い合わせに答えるため）で `purge_after` が立ち、
+`purge-identity-documents` が Storage から実体を消す。
+消えるのは画像だけで、「いつ誰が承認したか」は残す。辿れなくなると困るため。
 
 **自己承認を列権限で封じている。**
 RLS は「どの行を触れるか」しか制御しないので、「自分の待機状態は更新できる」ポリシーがある限り
@@ -84,6 +107,40 @@ update profiles set is_admin = true where id = '<運営のユーザーID>';
 ```
 
 以降はアプリから `review_volunteer(user_id, 'approved')` で承認できる。
+
+## 手元で立てる（Docker）
+
+Supabase 本体（Auth / Realtime / Edge Functions）はここに入れていない。
+それは `supabase start` の仕事で、二重に持つと設定がずれる。
+compose が立てるのは「Supabase CLI が無くても触れる部分」だけ。
+
+```bash
+docker compose up -d db livekit   # 軽い。すぐ上がる
+docker compose up -d ocr          # 初回はモデルを落とすので数分かかる
+```
+
+| サービス | 何が上がるか |
+|---|---|
+| `db` | マイグレーション6本を当てた PostgreSQL 17（`localhost:55432`）。テストと SQL いじり用 |
+| `livekit` | 開発モードの SFU（`ws://localhost:7880`、鍵は `devkey` / `secret`）。通話の疎通確認用 |
+| `ocr` | PaddleOCR（`http://localhost:8080`）。読み上げ経路の確認用 |
+
+`db` は初回起動時に `supabase/tests/supabase_stub.sql` と
+`supabase/migrations/*.sql` を順に当てる。stub は `auth` スキーマと
+3つのロールだけを最小限作るもので、`auth.uid()` は GUC から読む差し替え版になっている。
+手元で「誰として実行するか」を切り替えられる:
+
+```sql
+set role authenticated;
+set app.uid = '<ユーザーID>';
+select * from help_requests;   -- その人から見えるものだけ返る
+```
+
+テストもこの DB に向けられる:
+
+```bash
+PGURL=postgresql://postgres:postgres@127.0.0.1:55432/postgres ./supabase/tests/run.sh
+```
 
 ## 動かす
 
@@ -148,7 +205,7 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 
 一時クラスタを勝手に立てて捨てる。既存の DB を使う場合は `PGURL=postgres://... ./supabase/tests/run.sh`。
 
-確かめていること:
+確かめていること（37件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -158,6 +215,12 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 * 無関係の人は通報できない / 通報テーブルへの直接 insert が塞がれている
 * 別々の3人から通報されると自動停止する（2人では止まらない）
 * 通報された本人に通報が見えない
+* 本人確認前のボランティアは承認できない（停止はできる）
+* マイナンバーカードの裏面は受け付けない
+* 他人のフォルダのパスで本人確認を提出できない
+* 審査待ちを二重に積めない
+* 本人確認書類は本人と運営にしか見えない / 置けない
+* 画像を消しても審査の結果は残る
 
 ## まだ塞いでいない穴
 
@@ -167,10 +230,10 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
   Expo SDK 57 は New Architecture が既定で、`expo-doctor` が
   「Untested on New Architecture」と報告する。着信まわりが本番で
   一番壊れると痛い箇所なので、実機で最初に確かめるのはここ。
-- **承認の判断材料が無い。** 承認ゲートと権限は作ったが、
-  「何を見て approved にするか」は決めていない。
-  身分証の確認なり面談なりの運用を別途決める必要がある。
-  仕組みとしては `review_volunteer` を叩くところに繋げばいい。
+- **運営が書類を見る画面が無い。** 提出と権限はできているが、
+  承認する側は今のところ SQL（`review_identity`）を直接叩く必要がある。
+- **書類の真贋は見ていない。** 人が目で見る前提の作り。
+  偽造の検知や、書類の顔写真と自撮りの照合は自動化していない。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
@@ -181,7 +244,7 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 
 済んでいるもの:
 
-* `supabase/tests/run.sh` 17件（実 PostgreSQL 17 に4本のマイグレーションを適用して実行）
+* `supabase/tests/run.sh` 37件（実 PostgreSQL 17 に6本のマイグレーションを適用して実行）
 * `tsc --noEmit`（TypeScript 6）が通る
 * `expo-doctor` 21項目中20項目
 * OCR サーバの Python 構文

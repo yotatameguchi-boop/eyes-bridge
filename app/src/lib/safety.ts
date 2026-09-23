@@ -2,6 +2,7 @@
 //
 // ここに書いてあることは全部サーバ側でも強制されている。
 // 画面でボタンを隠すのは親切のためで、守りではない。
+import { fetchIdentity, type IdentityState } from "./identity";
 import { supabase } from "./supabase";
 
 export type ReviewState = "pending" | "approved" | "suspended" | "rejected";
@@ -10,6 +11,9 @@ export type VolunteerStanding = {
   reviewState: ReviewState;
   agreedToTerms: boolean;
   acceptedCount: number;
+  /** 本人確認を一度も出していなければ null */
+  identityState: IdentityState | null;
+  identityRejectReason: string;
 };
 
 export type ReportReason =
@@ -28,11 +32,14 @@ export const REPORT_REASONS: { value: ReportReason; label: string }[] = [
 ];
 
 export async function fetchStanding(userId: string): Promise<VolunteerStanding | null> {
-  const { data } = await supabase
-    .from("volunteer_status")
-    .select("review_state, agreed_to_terms_at, accepted_count")
-    .eq("user_id", userId)
-    .maybeSingle();
+  const [{ data }, identity] = await Promise.all([
+    supabase
+      .from("volunteer_status")
+      .select("review_state, agreed_to_terms_at, accepted_count")
+      .eq("user_id", userId)
+      .maybeSingle(),
+    fetchIdentity(userId).catch(() => null),
+  ]);
 
   if (!data) return null;
 
@@ -40,6 +47,8 @@ export async function fetchStanding(userId: string): Promise<VolunteerStanding |
     reviewState: data.review_state as ReviewState,
     agreedToTerms: data.agreed_to_terms_at !== null,
     acceptedCount: data.accepted_count ?? 0,
+    identityState: identity?.state ?? null,
+    identityRejectReason: identity?.rejectReason ?? "",
   };
 }
 

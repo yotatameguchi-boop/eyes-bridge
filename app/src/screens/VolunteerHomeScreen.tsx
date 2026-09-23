@@ -149,7 +149,16 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
   if (!standing || !approved) {
     return (
       <VolunteerGateScreen
-        standing={standing ?? { reviewState: "pending", agreedToTerms: false, acceptedCount: 0 }}
+        userId={profile.id}
+        standing={
+          standing ?? {
+            reviewState: "pending",
+            agreedToTerms: false,
+            acceptedCount: 0,
+            identityState: null,
+            identityRejectReason: "",
+          }
+        }
         onRefresh={() => void refreshStanding()}
       />
     );

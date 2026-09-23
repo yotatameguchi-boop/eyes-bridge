@@ -14,6 +14,15 @@ exception when others then
   return format('FAIL  %s  期待=%s 実際=%s', p_label, p_want, sqlerrm);
 end $$;
 
+create or replace function t_expect_ok(p_sql text, p_label text)
+returns text language plpgsql as $$
+begin
+  execute p_sql;
+  return format('PASS  %s', p_label);
+exception when others then
+  return format('FAIL  %s  （失敗した: %s）', p_label, sqlerrm);
+end $$;
+
 create or replace function t_expect(p_cond boolean, p_label text)
 returns text language sql as $$ select case when p_cond then 'PASS  ' else 'FAIL  ' end || p_label $$;
 
@@ -62,7 +71,12 @@ select t_expect_error(
 
 \echo '--- 3. 規約同意と承認を経ると取れる ---'
 select agree_to_terms();
+-- 本人確認を通しておく（本人確認そのものの検証は identity_test.sql）
+set app.uid = '00000000-0000-0000-0000-0000000000b1';
+select submit_identity('drivers_license', '00000000-0000-0000-0000-0000000000b1/front.jpg', '00000000-0000-0000-0000-0000000000b1/selfie.jpg', null);
 set app.uid = '00000000-0000-0000-0000-0000000000c1';
+select review_identity(
+  (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000b1' and state = 'submitted'), true);
 select review_volunteer('00000000-0000-0000-0000-0000000000b1', 'approved');
 set app.uid = '00000000-0000-0000-0000-0000000000b1';
 select t_expect((select count(*) from help_requests where state='queued') = 1, '承認後は待機列が見える');
@@ -74,7 +88,12 @@ select t_expect_error(
 
 \echo '--- 5. 取り合いは1人しか勝たない ---'
 select t_expect((claim_help_request('aaaa0001-0000-0000-0000-000000000001')).state = 'active', 'V1 が依頼を取れる');
+-- 本人確認を通しておく（本人確認そのものの検証は identity_test.sql）
+set app.uid = '00000000-0000-0000-0000-0000000000b2';
+select submit_identity('drivers_license', '00000000-0000-0000-0000-0000000000b2/front.jpg', '00000000-0000-0000-0000-0000000000b2/selfie.jpg', null);
 set app.uid = '00000000-0000-0000-0000-0000000000c1';
+select review_identity(
+  (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000b2' and state = 'submitted'), true);
 select review_volunteer('00000000-0000-0000-0000-0000000000b2','approved');
 set app.uid = '00000000-0000-0000-0000-0000000000b2';
 select agree_to_terms();
@@ -83,7 +102,12 @@ select t_expect_error(
   'ALREADY_TAKEN', '2人目は ALREADY_TAKEN で負ける（ID は着信時に既に持っている）');
 
 \echo '--- 6. ブロックした相手とは繋がらない ---'
+-- 本人確認を通しておく（本人確認そのものの検証は identity_test.sql）
+set app.uid = '00000000-0000-0000-0000-0000000000b3';
+select submit_identity('drivers_license', '00000000-0000-0000-0000-0000000000b3/front.jpg', '00000000-0000-0000-0000-0000000000b3/selfie.jpg', null);
 set app.uid = '00000000-0000-0000-0000-0000000000c1';
+select review_identity(
+  (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000b3' and state = 'submitted'), true);
 select review_volunteer('00000000-0000-0000-0000-0000000000b3','approved');
 set app.uid = '00000000-0000-0000-0000-0000000000b3';
 select agree_to_terms();

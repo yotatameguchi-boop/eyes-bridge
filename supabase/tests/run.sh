@@ -36,10 +36,16 @@ for f in "$root"/supabase/migrations/*.sql; do
   psql "$db" -v ON_ERROR_STOP=1 -q -f "$f" 2>&1 | grep -vE "NOTICE" || true
 done
 
-out="$(psql "$db" -q -t -A -f "$here/safety_test.sql" 2>&1)"
-echo "$out"
+# psql の終了コードでは落とさない。ERROR が出ても出力は必ず見せる。
+out=""
+for t in "$here"/*_test.sql; do
+  echo "== $(basename "$t") =="
+  part="$(psql "$db" -q -t -A -f "$t" 2>&1)" || true
+  echo "$part"
+  out="$out$part"$'\n'
+done
 
-if grep -q "FAIL" <<<"$out"; then
+if grep -qE "FAIL|ERROR:" <<<"$out"; then
   echo
   echo "テストが落ちました"
   exit 1

@@ -1,0 +1,68 @@
+# 手元で動かすための最小構成。
+#
+# Supabase 本体（Auth / Realtime / Edge Functions）はここには入れない。
+# それは `supabase start` の仕事で、二重に持つと設定がずれる。
+# ここで立てるのは「Supabase CLI が無くても触れる部分」だけ:
+#
+#   db      … マイグレーションを当てた Postgres。テストと SQL いじりに使う
+#   livekit … 開発モードの SFU。通話の疎通確認に使う
+#   ocr     … PaddleOCR。読み上げ経路の確認に使う
+#
+#   docker compose up -d db livekit   # 軽い。すぐ上がる
+#   docker compose up -d ocr          # 初回はモデルを落とすので数分かかる
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: eyes_bridge
+      # ロケールを固定しないと、エラーメッセージが環境で変わって
+      # テストの文字列判定が落ちる
+      LANG: C
+      LC_MESSAGES: C
+    ports:
+      - "55432:5432"
+    volumes:
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
+      - ./supabase/migrations:/migrations:ro
+      - ./supabase/tests:/stub:ro
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d eyes_bridge"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  livekit:
+    image: livekit/livekit-server:latest
+    # --dev は固定の鍵（devkey / secret）で起動する。
+    # 本番の鍵をここに書かないための開発専用モード。
+    command: --dev --bind 0.0.0.0
+    ports:
+      - "7880:7880"      # WebSocket / API
+      - "7881:7881"      # TCP フォールバック
+      - "7882:7882/udp"  # ICE/UDP
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7880"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ocr:
+    build: ./ocr
+    ports:
+      - "8080:8080"
+    environment:
+      ALLOWED_ORIGINS: "*"
+    healthcheck:
+      # モデルの初期化が終わるまで数十秒かかる
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+volumes:
+  db-data:
