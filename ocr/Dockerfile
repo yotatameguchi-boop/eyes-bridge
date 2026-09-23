@@ -9,11 +9,18 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
+# inspection.py を忘れると import で落ちる。増えたら必ずここに足す。
+COPY main.py inspection.py ./
 
-# 初回リクエストでモデルを取りに行くと数十秒待たされる。
-# 起動時に落としておく。
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(lang='japan')" || true
+# モデルはビルド時に焼き込まない。
+#
+# PP-OCRv5 のモデル一式は数百MBあり、ビルド中に落とすと
+# イメージのビルドが20分を超える。しかも取得元が詰まると、
+# キャッシュの効かない層でビルドごと止まる。
+#
+# 代わりに /root/.paddlex を volume に逃がして、
+# 最初の1リクエストだけ待ってもらう（compose 側で設定済み）。
+# 2回目以降のコンテナ起動では再ダウンロードは起きない。
 
 EXPOSE 8080
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

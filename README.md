@@ -153,7 +153,7 @@ docker compose up -d ocr          # 初回はモデルを落とすので数分�
 |---|---|
 | `db` | マイグレーション6本を当てた PostgreSQL 17（`localhost:55432`）。テストと SQL いじり用 |
 | `livekit` | 開発モードの SFU（`ws://localhost:7880`、鍵は `devkey` / `secret`）。通話の疎通確認用 |
-| `ocr` | PaddleOCR（`http://localhost:8080`）。読み上げ経路の確認用 |
+| `ocr` | PaddleOCR（`http://localhost:8081`）。読み上げと書類チェックの確認用 |
 
 `db` は初回起動時に `supabase/tests/supabase_stub.sql` と
 `supabase/migrations/*.sql` を順に当てる。stub は `auth` スキーマと
@@ -231,19 +231,29 @@ RLS と `is_admin` を見る RPC 側にある。
 ### 4. OCR サーバ（任意）
 
 ```bash
-cd ocr
-docker build -t eyes-bridge-ocr .
-docker run -p 8080:8080 eyes-bridge-ocr
+docker compose up -d ocr    # http://localhost:8081
 ```
 
-`app/.env` に `EXPO_PUBLIC_OCR_URL=http://<ホスト>:8080` を足すと「機械に読ませる」が有効になる。
+モデル（PP-OCRv5、数百MB）はイメージに焼いていない。
+ビルド時に落とすとイメージのビルドが20分を超え、取得元が詰まると
+キャッシュの効かない層でビルドごと止まるため。
+代わりに `/root/.paddlex` を volume に逃がしてあるので、
+**最初の1リクエストだけ待たされ、以降の再起動では落とし直さない**。
+
+自動チェックの単体テスト（モデル不要の部分）:
+
+```bash
+docker compose exec -T ocr python - < ocr/test_inspection.py
+```
+
+`app/.env` に `EXPO_PUBLIC_OCR_URL=http://<ホスト>:8081` を足すと「機械に読ませる」が有効になる。
 未設定でも通話側は動く。
 
 本人確認の自動チェックを使う場合は、OCR サーバに `INSPECT_TOKEN` を設定し、
 同じ値を Edge Function 側にも渡す:
 
 ```bash
-supabase secrets set OCR_URL=http://<ホスト>:8080 INSPECT_TOKEN=<共有する秘密>
+supabase secrets set OCR_URL=http://<ホスト>:8081 INSPECT_TOKEN=<共有する秘密>
 ```
 
 `INSPECT_TOKEN` が未設定だと `/inspect-document` は 503 で閉じる。
@@ -294,7 +304,8 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 - **自動チェックを本物の書類で試していない。** モアレの閾値（40）も
   OCR の信頼度の下限（0.6）も、実データで詰めていない仮の値。
 - **券面の顔写真と自撮りの照合はしていない。** 上の「やっていないこと」を参照。
-- **OCR サーバのコンテナを起動できていない。** イメージのビルドが長く、未完了。
+- **本物の書類で試していない。** OCR の読み取り精度も、モアレの閾値（40）も、
+  OCR 信頼度の下限（0.6）も、実データで詰めていない仮の値。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
@@ -309,6 +320,12 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
   テストファイルごとに DB を作り直すので、実行順で結果が変わらない
 * `docker compose up -d db livekit` が上がり、コンテナの DB に対してもテストが通る
 * 運営画面の `npm run build`（TypeScript の型チェック込み）
+* `docker compose up -d db livekit ocr` の3つが healthy になる
+* OCR コンテナで `/health` が応答し、`/inspect-document` が
+  トークン無し・誤トークンで 403 を返す
+* `ocr/test_inspection.py` 15件（コンテナ内で実行）
+  知覚ハッシュの安定性と弁別、元号・西暦の日付読み取り、
+  生年月日と有効期限の取り違え防止、旗の判定
 * `tsc --noEmit`（TypeScript 6）が通る
 * `expo-doctor` 21項目中20項目
 * OCR サーバの Python 構文
