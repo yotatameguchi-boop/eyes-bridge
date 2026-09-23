@@ -17,7 +17,9 @@ insert into storage.buckets (id, name, public)
      values ('identity-documents', 'identity-documents', false)
 on conflict (id) do nothing;
 
-alter table storage.objects enable row level security;
+-- storage.objects の RLS は Supabase 側で最初から有効になっている。
+-- ここで enable し直そうとすると、所有者が supabase_storage_admin なので
+-- must be owner of table objects で落ちる（実際に本物の Supabase で落ちた）。
 
 -- 置けるのは自分の user_id のフォルダの中だけ
 create policy "本人確認書類は自分のフォルダにだけ置ける"

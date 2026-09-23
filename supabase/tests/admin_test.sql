@@ -34,21 +34,21 @@ insert into volunteer_status (user_id) values
   ('00000000-0000-0000-0000-0000000000f9');
 
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000f1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f1"}';
 select submit_identity('drivers_license',
   '00000000-0000-0000-0000-0000000000f1/front.jpg',
   '00000000-0000-0000-0000-0000000000f1/selfie.jpg', null);
-set app.uid = '00000000-0000-0000-0000-0000000000f2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f2"}';
 select submit_identity('drivers_license',
   '00000000-0000-0000-0000-0000000000f2/front.jpg',
   '00000000-0000-0000-0000-0000000000f2/selfie.jpg', null);
 
 \echo '--- 1. 運営だけが全体を見られる ---'
-set app.uid = '00000000-0000-0000-0000-0000000000f1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f1"}';
 select t_expect((select count(*) from profiles) = 1, '一般ユーザーには自分のプロフィールだけ');
 select t_expect((select count(*) from volunteer_status) = 1, '一般ユーザーには自分の待機状態だけ');
 
-set app.uid = '00000000-0000-0000-0000-0000000000f9';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f9"}';
 select t_expect((select count(*) from profiles) >= 3, '運営は全員のプロフィールを見られる');
 select t_expect((select count(*) from volunteer_status) >= 3, '運営は全員の待機状態を見られる');
 select t_expect((select count(*) from identity_verifications) = 2, '運営は全件の本人確認を見られる');
@@ -59,7 +59,7 @@ select t_expect_error(
       (select id from identity_verifications limit 1), null, '{}'::text[], '{}'::jsonb)$q$,
   'permission denied', '運営でも自動チェックを直接書けない');
 
-set app.uid = '00000000-0000-0000-0000-0000000000f1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f1"}';
 select t_expect_error(
   $q$insert into document_checks (verification_id, flags)
      values ((select id from identity_verifications limit 1), '{}')$q$,
@@ -92,9 +92,9 @@ select t_expect(not ('duplicate_document' = any(flags)),
 
 \echo '--- 4. 自動チェックの見える範囲 ---'
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000f1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f1"}';
 select t_expect((select count(*) from document_checks) = 1, '本人は自分の自動チェックを見られる');
-set app.uid = '00000000-0000-0000-0000-0000000000f9';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f9"}';
 select t_expect((select count(*) from document_checks) = 2, '運営は全件の自動チェックを見られる');
 
 \echo '--- 5. 通報の処理は運営だけ ---'
@@ -104,13 +104,13 @@ insert into help_requests (id, requester_id, volunteer_id, state)
              '00000000-0000-0000-0000-0000000000f2',
              '00000000-0000-0000-0000-0000000000f1', 'active');
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000f2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f2"}';
 select report_participant('bbbb0001-0000-0000-0000-000000000001', 'privacy', '', false);
 select t_expect_error(
   $q$select handle_report((select id from reports limit 1))$q$,
   'NOT_AN_ADMIN', '一般ユーザーは通報を処理済みにできない');
 
-set app.uid = '00000000-0000-0000-0000-0000000000f9';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f9"}';
 select t_expect((select count(*) from reports) = 1, '運営は通報を見られる');
 select handle_report((select id from reports limit 1));
 select t_expect((select handled_at is not null from reports limit 1), '運営は通報を処理済みにできる');

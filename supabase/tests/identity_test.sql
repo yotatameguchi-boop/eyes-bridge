@@ -45,7 +45,7 @@ insert into volunteer_status (user_id) values
 
 \echo '--- 1. 本人確認なしでは承認できない ---'
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000e1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000e1"}';
 select t_expect_error(
   $q$select review_volunteer('00000000-0000-0000-0000-0000000000d1','approved')$q$,
   'IDENTITY_NOT_VERIFIED', '本人確認前のボランティアは承認できない');
@@ -54,7 +54,7 @@ select t_expect_ok(
   '停止は本人確認なしでもできる（問題時に止められないと困る）');
 
 \echo '--- 2. 個人番号は受け取らない ---'
-set app.uid = '00000000-0000-0000-0000-0000000000d1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d1"}';
 select t_expect_error(
   $q$select submit_identity('my_number_card',
        '00000000-0000-0000-0000-0000000000d1/front.jpg',
@@ -85,16 +85,16 @@ select t_expect_error(
   'identity_one_open_per_user', '審査待ちを二重に積めない');
 
 -- 本人でない一般ユーザーは審査できない
-set app.uid = '00000000-0000-0000-0000-0000000000d2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d2"}';
 select t_expect_error(
   $q$select review_identity((select id from identity_verifications limit 1), true)$q$,
   'NOT_AN_ADMIN', '一般ユーザーは本人確認を審査できない');
 select t_expect((select count(*) from identity_verifications) = 0, '他人の本人確認は見えない');
 
-set app.uid = '00000000-0000-0000-0000-0000000000d1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d1"}';
 select t_expect((select count(*) from identity_verifications) = 1, '自分の本人確認は見える');
 
-set app.uid = '00000000-0000-0000-0000-0000000000e1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000e1"}';
 select t_expect((select count(*) from identity_verifications) = 1, '運営は本人確認を見られる');
 select review_identity((select id from identity_verifications limit 1), true);
 select t_expect_ok(
@@ -102,14 +102,14 @@ select t_expect_ok(
   '本人確認が済めば承認できる');
 
 \echo '--- 5. 状態を自分で書き換えられない ---'
-set app.uid = '00000000-0000-0000-0000-0000000000d2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d2"}';
 select t_expect_error(
   $q$insert into identity_verifications (user_id, kind, front_path, selfie_path, state)
      values (auth.uid(), 'drivers_license', 'x', 'y', 'approved')$q$,
   'row-level security', '本人確認テーブルへの直接 insert は塞がれている');
 
 \echo '--- 6. Storage は自分のフォルダだけ ---'
-set app.uid = '00000000-0000-0000-0000-0000000000d1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d1"}';
 select t_expect_error(
   $q$insert into storage.objects (bucket_id, name)
      values ('identity-documents','00000000-0000-0000-0000-0000000000d2/front.jpg')$q$,
@@ -117,9 +117,9 @@ select t_expect_error(
 insert into storage.objects (bucket_id, name)
      values ('identity-documents','00000000-0000-0000-0000-0000000000d1/front.jpg');
 select t_expect((select count(*) from storage.objects) = 1, '自分のフォルダには置ける');
-set app.uid = '00000000-0000-0000-0000-0000000000d2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d2"}';
 select t_expect((select count(*) from storage.objects) = 0, '他人の書類は読めない');
-set app.uid = '00000000-0000-0000-0000-0000000000e1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000e1"}';
 select t_expect((select count(*) from storage.objects) = 1, '運営は書類を読める');
 
 \echo '--- 7. 審査済みの画像は消す対象に挙がる ---'

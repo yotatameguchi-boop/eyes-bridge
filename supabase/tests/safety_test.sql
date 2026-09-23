@@ -52,10 +52,10 @@ insert into volunteer_status (user_id) values
 
 \echo '--- 1. 審査前は待機列が見えない / 取れない ---'
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000a1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a1"}';
 insert into help_requests (id, requester_id) values ('aaaa0001-0000-0000-0000-000000000001','00000000-0000-0000-0000-0000000000a1');
 
-set app.uid = '00000000-0000-0000-0000-0000000000b1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b1"}';
 select t_expect((select count(*) from help_requests) = 0, '未審査のボランティアに待機列が見えない');
 select t_expect_error(
   $q$select claim_help_request('aaaa0001-0000-0000-0000-000000000001')$q$,
@@ -72,13 +72,13 @@ select t_expect_error(
 \echo '--- 3. 規約同意と承認を経ると取れる ---'
 select agree_to_terms();
 -- 本人確認を通しておく（本人確認そのものの検証は identity_test.sql）
-set app.uid = '00000000-0000-0000-0000-0000000000b1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b1"}';
 select submit_identity('drivers_license', '00000000-0000-0000-0000-0000000000b1/front.jpg', '00000000-0000-0000-0000-0000000000b1/selfie.jpg', null);
-set app.uid = '00000000-0000-0000-0000-0000000000c1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000c1"}';
 select review_identity(
   (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000b1' and state = 'submitted'), true);
 select review_volunteer('00000000-0000-0000-0000-0000000000b1', 'approved');
-set app.uid = '00000000-0000-0000-0000-0000000000b1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b1"}';
 select t_expect((select count(*) from help_requests where state='queued') = 1, '承認後は待機列が見える');
 
 \echo '--- 4. 管理者でない人は審査できない ---'
@@ -89,13 +89,13 @@ select t_expect_error(
 \echo '--- 5. 取り合いは1人しか勝たない ---'
 select t_expect((claim_help_request('aaaa0001-0000-0000-0000-000000000001')).state = 'active', 'V1 が依頼を取れる');
 -- 本人確認を通しておく（本人確認そのものの検証は identity_test.sql）
-set app.uid = '00000000-0000-0000-0000-0000000000b2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b2"}';
 select submit_identity('drivers_license', '00000000-0000-0000-0000-0000000000b2/front.jpg', '00000000-0000-0000-0000-0000000000b2/selfie.jpg', null);
-set app.uid = '00000000-0000-0000-0000-0000000000c1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000c1"}';
 select review_identity(
   (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000b2' and state = 'submitted'), true);
 select review_volunteer('00000000-0000-0000-0000-0000000000b2','approved');
-set app.uid = '00000000-0000-0000-0000-0000000000b2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b2"}';
 select agree_to_terms();
 select t_expect_error(
   $q$select claim_help_request('aaaa0001-0000-0000-0000-000000000001')$q$,
@@ -103,28 +103,28 @@ select t_expect_error(
 
 \echo '--- 6. ブロックした相手とは繋がらない ---'
 -- 本人確認を通しておく（本人確認そのものの検証は identity_test.sql）
-set app.uid = '00000000-0000-0000-0000-0000000000b3';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b3"}';
 select submit_identity('drivers_license', '00000000-0000-0000-0000-0000000000b3/front.jpg', '00000000-0000-0000-0000-0000000000b3/selfie.jpg', null);
-set app.uid = '00000000-0000-0000-0000-0000000000c1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000c1"}';
 select review_identity(
   (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000b3' and state = 'submitted'), true);
 select review_volunteer('00000000-0000-0000-0000-0000000000b3','approved');
-set app.uid = '00000000-0000-0000-0000-0000000000b3';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b3"}';
 select agree_to_terms();
-set app.uid = '00000000-0000-0000-0000-0000000000a1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a1"}';
 insert into blocks (blocker_id, blocked_id) values (auth.uid(), '00000000-0000-0000-0000-0000000000b3');
 insert into help_requests (id, requester_id) values ('aaaa0002-0000-0000-0000-000000000002', auth.uid());
-set app.uid = '00000000-0000-0000-0000-0000000000b3';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b3"}';
 select t_expect((select count(*) from help_requests where state='queued') = 0, 'ブロックされた人には依頼が見えない');
 set role postgres;
 select t_expect_error(
-  $q$set role authenticated; set app.uid = '00000000-0000-0000-0000-0000000000b3';
+  $q$set role authenticated; set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b3"}';
      select claim_help_request('aaaa0002-0000-0000-0000-000000000002')$q$,
   'BLOCKED', 'ブロックされた人は依頼を取れない');
 
 \echo '--- 7. 通報は当事者しか出せない ---'
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000b4';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b4"}';
 select t_expect_error(
   $q$select report_participant('aaaa0001-0000-0000-0000-000000000001', 'harassment')$q$,
   'NOT_A_PARTICIPANT', '無関係の人は通報できない');
@@ -147,23 +147,23 @@ insert into help_requests (id, requester_id, volunteer_id, state) values
   ('22222222-2222-2222-2222-222222222222','00000000-0000-0000-0000-0000000000a2','00000000-0000-0000-0000-0000000000b1','active'),
   ('33333333-3333-3333-3333-333333333333','00000000-0000-0000-0000-0000000000a3','00000000-0000-0000-0000-0000000000b1','active');
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000a1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a1"}';
 select report_participant('11111111-1111-1111-1111-111111111111','privacy','', false);
-set app.uid = '00000000-0000-0000-0000-0000000000a2';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a2"}';
 select report_participant('22222222-2222-2222-2222-222222222222','privacy','', false);
 set role postgres;
 select t_expect((select review_state from volunteer_status where user_id='00000000-0000-0000-0000-0000000000b1') = 'approved', '2件では停止しない');
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000a3';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a3"}';
 select report_participant('33333333-3333-3333-3333-333333333333','privacy','', false);
 set role postgres;
 select t_expect((select review_state from volunteer_status where user_id='00000000-0000-0000-0000-0000000000b1') = 'suspended', '3人目の通報で自動停止する');
 set role authenticated;
-set app.uid = '00000000-0000-0000-0000-0000000000b1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b1"}';
 select t_expect(not is_approved_volunteer(auth.uid()), '停止後は承認済みでなくなる');
 
 \echo '--- 9. 通報された側に通報は見えない ---'
 select t_expect((select count(*) from reports) = 0, '通報された本人には通報が見えない');
-set app.uid = '00000000-0000-0000-0000-0000000000a1';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a1"}';
 select t_expect((select count(*) from reports) = 1, '自分が出した通報だけ見える');
 reset role;
