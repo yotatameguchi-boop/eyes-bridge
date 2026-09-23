@@ -28,6 +28,17 @@ const selfie = await Deno.readFile(Deno.env.get("E2E_SELFIE_JPG")!);
 const admin = createClient(API, SERVICE, { auth: { persistSession: false } });
 const BUCKET = "identity-documents";
 
+// 使い回し検出は DB 全体を見るので、同じ見本画像が既に入っていると
+// 「初回の提出」が初回にならない。空の DB を前提にし、違えば先に止める。
+{
+  const { count } = await admin.from("profiles").select("*", { count: "exact", head: true });
+  if ((count ?? 0) > 0) {
+    console.log(`既存のデータがあります（profiles: ${count} 行）。空の DB で流してください。`);
+    console.log("デモデータなら: deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean");
+    Deno.exit(1);
+  }
+}
+
 let failures = 0;
 function ok(condition: boolean, label: string, extra = "") {
   if (!condition) failures++;

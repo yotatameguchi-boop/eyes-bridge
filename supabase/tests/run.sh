@@ -54,6 +54,18 @@ if [[ -n "${SUPABASE_DB_URL:-}" ]]; then
   # lc_messages を変えられず、接続そのものが拒否される。
   # イメージ側が C ロケールなので、変えなくてもメッセージは英語になる。
   unset PGOPTIONS
+
+  # テストは件数で「見える範囲」を確かめているので、空の DB が前提。
+  # デモデータなどが残っていると、何十件も的外れに落ちて原因が分かりにくい。
+  # 先にはっきり止める。
+  rows="$(psql "$SUPABASE_DB_URL" -tAc "select count(*) from public.profiles" 2>/dev/null || echo "?")"
+  if [[ "$rows" != "0" ]]; then
+    echo "本物の Supabase に既存のデータがあります（profiles: $rows 行）。"
+    echo "テストは空の DB が前提です。デモデータなら次で消せます:"
+    echo "  deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean"
+    exit 1
+  fi
+
   failed=0
   for test_file in "$here"/*_test.sql; do
     echo "== $(basename "$test_file" .sql)（本物の Supabase） =="

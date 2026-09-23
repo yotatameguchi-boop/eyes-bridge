@@ -176,12 +176,18 @@ PGURL=postgresql://postgres:postgres@127.0.0.1:55432/postgres ./supabase/tests/r
 
 ### 1. Supabase
 
+本番（Supabase のプロジェクト）へ:
+
 ```bash
-supabase start
 supabase db push
+supabase config push          # ログインコード入りのメール文面もここで反映される
 supabase functions deploy livekit-token
 supabase functions deploy ring-volunteers
+supabase functions deploy inspect-identity
+supabase functions deploy purge-identity-documents
 ```
+
+手元で全部を立てる場合は下の「手元で通しで動かす」を参照。
 
 Edge Function に必要なシークレット:
 
@@ -195,11 +201,22 @@ supabase secrets set \
 iOS の VoIP 着信を使う場合は追加で
 `APNS_KEY_ID` / `APNS_TEAM_ID` / `APNS_BUNDLE_ID` / `APNS_PRIVATE_KEY`（.p8 の中身）。
 
-時間切れの掃除は pg_cron から:
+定期実行（期限切れ依頼の掃除・承認が外れた人の待機解除・書類画像の削除）は
+`0008_schedules.sql` が pg_cron に登録する。画像の削除だけは Edge Function を
+呼ぶので、URL と service role キーを一度だけ Vault に入れる
+（マイグレーションに書かないのは、公開リポジトリだから）:
 
 ```sql
-select cron.schedule('expire-requests', '* * * * *', $$select expire_stale_requests()$$);
+select vault.create_secret('https://<project>.supabase.co', 'project_url');
+select vault.create_secret('<service role key>', 'service_role_key');
 ```
+
+**ログインのメール文面。** アプリも運営画面も「6桁のコードを入力する」作り。
+Supabase 既定のテンプレートはリンクしか載せないので、そのままでは
+**誰もログインできない**（手元の検証で実際にそうなった）。
+`supabase/templates/login_code.html` がコード入りの文面で、`config.toml` から
+参照している。スクリーンリーダーは「315315」を「三十一万五千…」と数として
+読むので、「3、1、5、3、1、5」と1桁ずつ区切った形も並べてある。
 
 ### 2. アプリ
 
@@ -221,6 +238,15 @@ cp .env.example .env   # Supabase の URL と anon key を入れる
 npm install
 npm run dev            # http://localhost:5180
 ```
+
+コンテナで配る場合（nginx。`no-referrer` / `noindex` / `DENY` のヘッダ付き）:
+
+```bash
+ADMIN_SUPABASE_ANON_KEY=<anon key> docker compose --profile admin up -d --build admin
+```
+
+キーを渡し忘れるとビルドの時点で止まる。空のまま焼くと、開けるのに
+何もできない壊れた画面になるため。
 
 service role キーはフロントに置かない。運営も普通のユーザーとしてログインし、
 `is_admin` で通す。画面を隠すのは親切であって守りではなく、実際の防御は
@@ -277,18 +303,67 @@ supabase secrets set OCR_URL=http://<ホスト>:8081 INSPECT_TOKEN=<共有する
 `INSPECT_TOKEN` が未設定だと `/inspect-document` は 503 で閉じる。
 本人確認書類が飛んでくる口を、設定し忘れで誰でも叩ける状態にしないため。
 
-## テスト
+## 手元で通しで動かす
 
-マイグレーションを実際の PostgreSQL に当てて、安全側の挙動を確かめる。
-Supabase を立てなくても回る（`auth` スキーマと3つのロールだけ stub で作る）。
+本物の Supabase（Auth / Storage / Realtime / Edge Functions / pg_cron）を立てて、
+全部つなげる。初回はイメージの取得に時間がかかる（合計 5GB ほど）。
 
 ```bash
-./supabase/tests/run.sh
+supabase start -x imgproxy,logflare,vector,supavisor,studio,postgres-meta
+supabase functions serve --env-file supabase/functions/.env   # 下の .env を用意
+docker compose up -d livekit ocr
 ```
 
-一時クラスタを勝手に立てて捨てる。既存の DB を使う場合は `PGURL=postgres://... ./supabase/tests/run.sh`。
+`supabase/functions/.env`（手元用。.gitignore 済み）:
 
-確かめていること（51件）:
+```
+LIVEKIT_URL=ws://host.docker.internal:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=secret
+OCR_URL=http://host.docker.internal:8081
+INSPECT_TOKEN=local-dev-inspect-token
+```
+
+運営画面を触ってみるデモデータ（運営は `ops-demo@example.test`。
+ログインコードは Mailpit http://127.0.0.1:54324 に届く）:
+
+```bash
+eval "$(supabase status -o env | grep -E '^(ANON_KEY|SERVICE_ROLE_KEY)=')"
+export SUPABASE_ANON_KEY=$ANON_KEY SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY
+export E2E_CARD_JPG=/path/card.jpg E2E_SELFIE_JPG=/path/selfie.jpg   # 見本画像（実在の書類は使わない）
+deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts          # 入れる
+deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean  # 消す
+```
+
+見本画像は `ocr/test_japanese_sample.py` と同じ作り方（フォントで描いた「見本 花子」）。
+
+## テスト
+
+4種類ある。上から速い順。
+
+```bash
+./supabase/tests/run.sh                                        # SQL 51件（stub。Supabase 不要）
+SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+  ./supabase/tests/run.sh                                      # SQL 51件（本物の Supabase）
+(cd supabase/functions && deno test --allow-env --allow-read _tests/)   # Edge Function 6件
+deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 30件
+```
+
+SQL テストは同じファイルを stub と本物の両方に流せる。stub は速いが、
+テーブルの所有者や「postgres が superuser でない」ことなど本物との差は
+再現しきれない（実際に 0006 がそれで本物でだけ落ちた）。本物に流すときは
+各ファイルを `begin ... rollback` で包むので、DB に何も残さない。
+
+本物の Supabase に流す SQL テストと通しのテストは、**空の DB が前提**。
+件数で「見える範囲」を確かめているのと、使い回し検出が DB 全体を見るため。
+デモデータが入っていると、的外れに何十件も落ちる代わりに先にはっきり止まる
+（`seed_admin_demo.ts --clean` で消してから流す）。
+
+ランナーは「FAIL が無い」だけでは通さない。psql の異常終了と、
+PASS が1件も無いことも失敗として扱う（接続に失敗して何も走らなかったのに
+「通った」と報告していたことがあるため）。
+
+SQL テストで確かめていること（51件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -309,22 +384,36 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 * 別アカウントのほぼ同じ書類に `duplicate_document` が立ち、別物では立たない
 * 通報を処理済みにできるのは運営だけ
 
+Edge Function のテスト（6件）:
+
+* トークンの JWT に載る権限が、依頼者は `camera`+`microphone`、ボランティアは `microphone` だけ
+* APNs のプロバイダトークンの署名を、その場で作った P-256 の鍵の公開鍵で検証できる
+
+通しのテスト `scripts/e2e_local.ts`（30件）:
+
+* 発行したトークンを LiveKit サーバ自身が受け付ける（`/rtc/validate`）
+* 書類 → Storage → `inspect-identity` → OCR コンテナ → 判定の保存、が一本でつながる
+* 別アカウントが同じ書類を出すと `duplicate_document` が立つ
+* 審査前は依頼を取れず、本人確認と承認を経ると取れる
+* 期限切れの書類画像が Storage から実際に消え、審査の結果は残る
+
 ## まだ塞いでいない穴
 
-- **実機で一度も動かしていない。** ネイティブビルドが要るので、通話も着信も未検証。
-  音と映像が実際に通るか、VoIP push が鳴るかはここを通すまで分からない。
+- **実機で一度も動かしていない。** 通話も着信も、音と映像が実際に通るかは
+  ネイティブビルドを通すまで分からない。検証に使った Mac には Xcode も
+  Android SDK も無く、ここだけは手が出せていない。
+  トークンの発行と LiveKit サーバがそれを受け付けることまでは確認済み。
 - **react-native-callkeep は New Architecture で未検証。**
   Expo SDK 57 は New Architecture が既定で、`expo-doctor` が
   「Untested on New Architecture」と報告する。着信まわりが本番で
   一番壊れると痛い箇所なので、実機で最初に確かめるのはここ。
-- **運営画面をブラウザで表示していない。** 型チェックとビルドは通っているが、
-  実際に描画して操作したわけではない。
-- **自動チェックを本物の書類で試していない。** モアレの閾値（40）も
-  OCR の信頼度の下限（0.6）も、実データで詰めていない仮の値。
-- **券面の顔写真と自撮りの照合はしていない。** 上の「やっていないこと」を参照。
 - **本物の書類で試していない。** 見本画像（平らな背景にフォントで描いたもの）は
   読めたが、実物の撮影写真は反射・傾き・地紋があり条件がまったく違う。
   モアレの閾値（40）も OCR 信頼度の下限（0.6）も、実データで詰めていない仮の値。
+- **券面の顔写真と自撮りの照合はしていない。** 上の「やっていないこと」を参照。
+- **着信の実送信は確かめていない。** `ring-volunteers` が動き、依頼者以外を
+  弾くことまでは確認したが、Expo / APNs に実際に送ってはいない
+  （外部サービスに送ることになるため）。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
@@ -335,30 +424,29 @@ Supabase を立てなくても回る（`auth` スキーマと3つのロールだ
 
 済んでいるもの:
 
-* `supabase/tests/run.sh` 51件（実 PostgreSQL 17 にマイグレーション7本を適用して実行）
-  テストファイルごとに DB を作り直すので、実行順で結果が変わらない
-* `docker compose up -d db livekit` が上がり、コンテナの DB に対してもテストが通る
-* 運営画面の `npm run build`（TypeScript の型チェック込み）
-* `docker compose up -d db livekit ocr` の3つが healthy になる
-* OCR コンテナで `/health` が応答し、`/inspect-document` が
-  トークン無し・誤トークンで 403 を返す
-* `ocr/test_inspection.py` 15件（コンテナ内で実行）
-  知覚ハッシュの安定性と弁別、元号・西暦の日付読み取り、
-  生年月日と有効期限の取り違え防止、旗の判定
-* `ocr/test_japanese_sample.py` 9件（mobile 系の実モデルで実行）
-  日本語の見本画像を8行すべて読めること、有効期限を
-  生年月日・交付日と取り違えないこと、期限切れに `expired` が立つこと
-* `tsc --noEmit`（TypeScript 6）が通る
-* `expo-doctor` 21項目中20項目
-* OCR サーバの Python 構文
+* SQL テスト 51件を **stub と本物の Supabase の両方で**（マイグレーション8本）
+* Edge Function 4本の Deno の型チェックと、単体テスト 6件
+* 通しのテスト 30件（本物の Supabase + Edge Functions + LiveKit + OCR）
+* 運営画面を**ブラウザで実際に操作**：コードでのログイン、書類画像の表示
+  （署名付き URL）、旗の表示、理由なしの却下を止める、本人確認の承認、
+  本人確認が済むまでボランティアの承認ボタンが押せない、通報の対応。
+  操作の結果が DB に残り、審査者・対応者が記録されることも確認
+* `docker compose` の db / livekit / ocr / admin が healthy で上がる
+* OCR：単体 15件、日本語の見本画像での結合 9件（mobile 系モデル）
+* RN アプリの `tsc --noEmit`、`expo-doctor` 21項目中20項目
+
+検証の途中で見つかって直した不具合（詳細はコミット履歴）:
+
+* **トークン発行が毎回失敗していた。** LiveKit SDK に文字列を渡しており、
+  変換で例外になっていた。誰も通話に入れない状態だった
+* **ログインのメールにコードが入っていなかった。** 誰もログインできない状態だった
+* **0006 が本物の Supabase で落ちた。** 本番への db push も同じ場所で落ちていた
+* **テストランナーが、何も走っていないのに「通った」と報告していた**
 
 していないもの:
 
 * **実機での通話と着信。**
-* **Edge Function の実行。** Deno 未導入のため esbuild による構文確認のみ。
-  `npm:` 指定の解決は `supabase functions serve` で確かめること。
-* **OCR の精度。** PaddleOCR の日本語モデルを実際の薬袋やレシートに
-  当てていない。読み順の並べ替えロジックは実データで詰める必要がある。
+* **OCR の精度を実物の書類で。**
 
 ## ライセンスの注意
 

@@ -76,6 +76,21 @@ services:
       retries: 30
       start_period: 30s
 
+  # 運営画面。接続先の Supabase は build 時に埋め込まれる。
+  # 既定では立ち上げない（キーが要るので）。使うときだけ:
+  #   ADMIN_SUPABASE_ANON_KEY=... docker compose --profile admin up -d --build admin
+  admin:
+    profiles: ["admin"]
+    build:
+      context: ./admin
+      args:
+        VITE_SUPABASE_URL: "${ADMIN_SUPABASE_URL:-http://127.0.0.1:54321}"
+        # ここを :? にすると、admin 以外のサービスを上げるときまで
+        # 未設定で落ちる。空で渡して Dockerfile 側で止める。
+        VITE_SUPABASE_ANON_KEY: "${ADMIN_SUPABASE_ANON_KEY:-}"
+    ports:
+      - "${ADMIN_PORT:-5180}:80"
+
 volumes:
   db-data:
   paddle-models:

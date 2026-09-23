@@ -243,6 +243,18 @@ otp_expiry = 3600
 # sender_name = "Admin"
 
 # Uncomment to customize email template
+# ログインは6桁コードを入力する方式（アプリ・運営画面とも）。
+# 既定のテンプレートはリンクしか載せないので、コード入りに差し替える。
+# 新規登録（confirmation）と既存ユーザー（magic_link）の両方で同じ文面を使う。
+# 本番のプロジェクトにも `supabase config push` で同じ設定を反映すること。
+[auth.email.template.magic_link]
+subject = "eyes-bridge のログインコード"
+content_path = "./supabase/templates/login_code.html"
+
+[auth.email.template.confirmation]
+subject = "eyes-bridge のログインコード"
+content_path = "./supabase/templates/login_code.html"
+
 # [auth.email.template.invite]
 # subject = "You have been invited"
 # content_path = "./supabase/templates/invite.html"
