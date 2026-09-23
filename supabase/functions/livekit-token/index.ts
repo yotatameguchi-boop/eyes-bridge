@@ -4,6 +4,7 @@
 // 任意の部屋に入れてしまい、他人の通話を覗けるため。
 // ここで「その人が本当にその依頼の当事者か」を DB に問い合わせて確かめる。
 import { AccessToken } from "npm:livekit-server-sdk@2";
+import { videoGrantFor } from "../_shared/grant.ts";
 import { authenticate, HttpError, json, serveJson } from "../_shared/auth.ts";
 
 const TTL_SECONDS = 60 * 30; // 通話1回分。長めに切れると再入室できない
@@ -38,16 +39,7 @@ Deno.serve(serveJson(async (req) => {
     { identity: userId, ttl: TTL_SECONDS },
   );
 
-  token.addGrant({
-    room: request.room_name,
-    roomJoin: true,
-    // 依頼者だけがカメラを出す。ボランティアは声だけ。
-    // 「見る側の顔が映らない」ことが依頼者の心理的な敷居を大きく下げる。
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-    canPublishSources: isRequester ? ["camera", "microphone"] : ["microphone"],
-  });
+  token.addGrant(videoGrantFor(request.room_name, isRequester ? "requester" : "volunteer"));
 
   return json({
     token: await token.toJwt(),

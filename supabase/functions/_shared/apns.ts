@@ -9,6 +9,11 @@
 
 let cachedJwt: { token: string; issuedAt: number } | null = null;
 
+/** テスト用。鍵を差し替えたあとにキャッシュを捨てる。 */
+export function resetProviderTokenCache() {
+  cachedJwt = null;
+}
+
 async function importKey(p8: string): Promise<CryptoKey> {
   const body = p8
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
@@ -31,7 +36,7 @@ const b64urlJson = (obj: unknown) =>
   b64url(new TextEncoder().encode(JSON.stringify(obj)));
 
 /** APNs のプロバイダトークン。Apple の指定で最長60分、最短20分間隔での再発行。 */
-async function providerToken(): Promise<string> {
+export async function providerToken(): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   if (cachedJwt && now - cachedJwt.issuedAt < 45 * 60) return cachedJwt.token;
 
