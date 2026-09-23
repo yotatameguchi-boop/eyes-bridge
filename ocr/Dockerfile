@@ -9,8 +9,8 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# inspection.py を忘れると import で落ちる。増えたら必ずここに足す。
-COPY main.py inspection.py ./
+# ここに無いモジュールは import で落ちる。増えたら必ずここに足す。
+COPY main.py inspection.py framing.py ./
 
 # モデルはビルド時に焼き込まない。
 #

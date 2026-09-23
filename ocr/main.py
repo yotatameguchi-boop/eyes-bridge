@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps
 from pydantic import BaseModel
 
+from framing import frame_quality, to_capture_frame
 from inspection import Inspection, inspect as inspect_document
 
 logging.basicConfig(level=logging.INFO)
@@ -54,11 +55,23 @@ app.add_middleware(
 class Block(BaseModel):
     text: str
     confidence: float
+    # 撮ったときの向きでの位置（0〜1 に正規化した x0, y0, x1, y1）。
+    # 端に接している行があれば、紙がそちらにはみ出している。撮影の案内に使う。
+    box: list[float]
+
+
+class Frame(BaseModel):
+    """写り方。撮影の案内の材料（判断はアプリ側）。"""
+    blur: float        # 小さいほどぼけている
+    brightness: float  # 0〜255
+    contrast: float    # 濃淡のばらつき。白紙なら 0 に近い
+    rotated: int       # 横向きに撮られていたら 90 / 180 / 270
 
 
 class OcrResponse(BaseModel):
     text: str
     blocks: list[Block]
+    frame: Frame
     engine: str
 
 
@@ -72,9 +85,12 @@ class InspectResponse(BaseModel):
 class Line:
     text: str
     confidence: float
+    # 以下3つは文書の向き（起こした後）の座標。読む順番を決めるのに使う
     x: float
     y: float
     height: float
+    # 撮ったときの向きでの正規化座標。撮影の案内に使う
+    box: list[float]
 
 
 _engine = None
@@ -137,11 +153,19 @@ def sort_for_reading(lines: list[Line]) -> list[Line]:
     return [line for row in rows for line in sorted(row, key=lambda l: l.x)]
 
 
-def extract(image: np.ndarray) -> list[Line]:
+def extract(image: np.ndarray) -> tuple[list[Line], int]:
+    """読めた行と、写真を起こすのに回した角度を返す。"""
     result = engine().predict(image)
     lines: list[Line] = []
+    angle = 0
 
     for page in result:
+        pre = page.get("doc_preprocessor_res") or {}
+        angle = int(pre.get("angle") or 0)
+        # 座標は起こした後の画像のもの。正規化もその大きさで割る
+        upright = pre.get("output_img")
+        height, width = (upright if upright is not None else image).shape[:2]
+
         texts = page.get("rec_texts", [])
         scores = page.get("rec_scores", [])
         boxes = page.get("rec_polys", page.get("dt_polys", []))
@@ -150,17 +174,20 @@ def extract(image: np.ndarray) -> list[Line]:
             if not text.strip():
                 continue
             points = np.array(box, dtype=float).reshape(-1, 2)
+            x0, y0 = points.min(axis=0)
+            x1, y1 = points.max(axis=0)
             lines.append(
                 Line(
                     text=text,
                     confidence=float(score),
-                    x=float(points[:, 0].min()),
-                    y=float(points[:, 1].min()),
-                    height=float(points[:, 1].max() - points[:, 1].min()),
+                    x=float(x0),
+                    y=float(y0),
+                    height=float(y1 - y0),
+                    box=to_capture_frame((x0 / width, y0 / height, x1 / width, y1 / height), angle),
                 )
             )
 
-    return lines
+    return lines, angle
 
 
 @app.get("/health")
@@ -176,14 +203,18 @@ async def ocr(image: UploadFile = File(...)) -> OcrResponse:
     if len(raw) > MAX_BYTES:
         raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
 
-    lines = sort_for_reading(extract(load_image(raw)))
+    image = load_image(raw)
+    found, angle = extract(image)
+    lines = sort_for_reading(found)
+    quality = frame_quality(image)
 
-    # raw はここで参照を落とす。ディスクにもログにも残さない。
-    del raw
+    # raw と画像はここで参照を落とす。ディスクにもログにも残さない。
+    del raw, image
 
     return OcrResponse(
         text="\n".join(l.text for l in lines),
-        blocks=[Block(text=l.text, confidence=round(l.confidence, 3)) for l in lines],
+        blocks=[Block(text=l.text, confidence=round(l.confidence, 3), box=l.box) for l in lines],
+        frame=Frame(**quality, rotated=angle),
         engine="paddleocr-japan",
     )
 
@@ -227,7 +258,7 @@ async def inspect_endpoint(
             selfie_image = load_image(selfie_raw)
         del selfie_raw
 
-    lines = extract(front_image)
+    lines, _ = extract(front_image)
 
     result: Inspection = inspect_document(
         kind=kind,

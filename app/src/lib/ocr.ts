@@ -1,7 +1,16 @@
 import { OCR_URL } from "./env";
+import type { FrameInfo, FrameLine } from "./framing";
 
-export type OcrBlock = { text: string; confidence: number };
-export type OcrResult = { text: string; blocks: OcrBlock[]; engine: string };
+/** 1行分。box は撮ったときの向きでの位置（0〜1 に正規化した x0, y0, x1, y1） */
+export type OcrBlock = FrameLine;
+
+export type OcrResult = {
+  text: string;
+  blocks: OcrBlock[];
+  /** 写り方。撮影の案内の材料（判断は framing.ts） */
+  frame: FrameInfo & { rotated: number };
+  engine: string;
+};
 
 export const ocrAvailable = OCR_URL !== null;
 

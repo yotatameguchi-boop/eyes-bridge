@@ -3,29 +3,28 @@ import { AccessibilityInfo, ActivityIndicator, ScrollView, StyleSheet, Text, Vie
 import * as ImagePicker from "expo-image-picker";
 import { BigButton } from "../components/BigButton";
 import { ocrAvailable, readImage } from "../lib/ocr";
+import { composeReading, THRESHOLDS, type Reading } from "../lib/framing";
 import {
+  feedback,
   notifyStateChange,
   readLongText,
   say,
   stopSpeaking,
   useScreenReader,
 } from "../lib/a11y";
-
-const LOW_CONFIDENCE_NOTICE = "はっきり読めない部分があります。";
 import { colors, space, type as typeScale } from "../theme";
 
 export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
   const [busy, setBusy] = useState(false);
   const [text, setText] = useState<string | null>(null);
+  const [reading, setReading] = useState<Reading | null>(null);
   const [lowConfidence, setLowConfidence] = useState(false);
   const screenReader = useScreenReader();
   const resultRef = useRef<ComponentRef<typeof Text>>(null);
 
-  // 警告と本文は「1つの読み上げ」にまとめる。
-  // 別々に出すと、アプリの声では本文が警告を止めて上書きし、
-  // スクリーンリーダーではフォーカス移動が警告の読み上げを切る。
-  // 黙って間違った金額や用量を読むのが一番まずいので、警告は必ず先に聞かせる。
-  const spoken = text ? `${lowConfidence ? LOW_CONFIDENCE_NOTICE : ""}${text}` : "";
+  // 撮り方の案内・自信の無い部分の警告・本文は、composeReading が
+  // 「1つの読み上げ」にまとめてある。別々に出すと後のものが前を切るため。
+  const spoken = reading?.spoken ?? "";
 
   const focusResult = useCallback(() => {
     // 描画が落ち着く前にフォーカスを送ると、iOS では無視されることがある
@@ -54,22 +53,22 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
 
     setBusy(true);
     setText(null);
+    setReading(null);
     await say("読み取っています");
 
     try {
       const result = await readImage(shot.assets[0].uri);
+      const next = composeReading(result.text, result.blocks, result.frame);
 
-      if (result.text.trim().length === 0) {
-        setText("");
-        await notifyStateChange("文字が見つかりませんでした。もう一度撮ってください", "failed");
-        return;
-      }
+      // 撮り直したほうがいいときは、声より先に振動で「うまくいかなかった」を伝える
+      await (next.retake ? feedback.failed() : feedback.progress()).catch(() => {});
 
       // 読み上げは上の useEffect が1回だけ行う
-      setLowConfidence(result.blocks.some((b) => b.confidence < 0.6));
+      setLowConfidence(result.blocks.some((b) => b.confidence < THRESHOLDS.lowConfidence));
       setText(result.text);
+      setReading(next);
     } catch {
-      await notifyStateChange("読み取れませんでした", "failed");
+      await notifyStateChange("読み取れませんでした。通信を確かめて、もう一度撮ってください", "failed");
     } finally {
       setBusy(false);
     }
@@ -90,11 +89,15 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
     );
   }
 
+  const hasText = !!text && text.trim().length > 0;
+
   return (
     <View style={styles.root}>
       <BigButton
-        label={busy ? "読み取り中" : "写して読ませる"}
-        hint="カメラが開きます。読みたい紙を画面いっぱいに入れて撮ってください"
+        label={busy ? "読み取り中" : reading?.retake ? "撮り直す" : "写して読ませる"}
+        // 「画面いっぱいに入れて」とは言わない。画面が見えない人には確かめようがない。
+        // 構え方を具体的に伝え、うまく写らなかったら撮った後に直し方を言う。
+        hint="カメラが開きます。スマホを紙の真上に、30センチほど離して構えてから撮ってください。うまく写っていなければ、撮ったあとに直し方をお伝えします"
         onPress={capture}
         disabled={busy}
         hero
@@ -102,35 +105,41 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
 
       {busy ? <ActivityIndicator size="large" color={colors.primary} style={{ margin: space.md }} /> : null}
 
-      {text !== null ? (
+      {reading ? (
         <View style={styles.result}>
-          {lowConfidence ? (
-            // 目で見る人向けの表示。同じ警告は本文の読み上げの先頭に入れてあるので、
-            // スクリーンリーダーからは隠す（なぞったときに2回聞こえないように）。
+          {/* 以下2つは目で見る人向けの表示。どちらも本文の読み上げの先頭に
+              入れてあるので、スクリーンリーダーからは隠す（なぞったとき2回聞こえないように）。
+              文字が無いときは案内そのものを下の本文の場所に出すので、ここには出さない。 */}
+          {reading.guidance && hasText ? (
+            <Text
+              style={styles.guidance}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              {reading.guidance}
+            </Text>
+          ) : null}
+          {lowConfidence && hasText ? (
             <Text
               style={styles.warning}
               accessibilityElementsHidden
               importantForAccessibility="no-hide-descendants"
             >
-              {LOW_CONFIDENCE_NOTICE}
+              はっきり読めない部分があります。
             </Text>
           ) : null}
           <ScrollView>
             {/* live region にしない。結果は useEffect で1回だけ読む。
                 live region だと Android では TalkBack とアプリの声が同時に読む。 */}
-            <Text
-              ref={resultRef}
-              style={styles.resultText}
-              accessibilityLabel={spoken || "文字が見つかりませんでした"}
-            >
-              {text.length > 0 ? text : "文字が見つかりませんでした"}
+            <Text ref={resultRef} style={styles.resultText} accessibilityLabel={spoken}>
+              {hasText ? text : reading.guidance}
             </Text>
           </ScrollView>
         </View>
       ) : null}
 
       <View style={{ height: space.sm }} />
-      {text ? (
+      {spoken ? (
         <>
           <BigButton label="もう一度読み上げる" variant="secondary" onPress={repeat} />
           <View style={{ height: space.sm }} />
@@ -160,5 +169,12 @@ const styles = StyleSheet.create({
     padding: space.md,
   },
   resultText: { color: colors.text, fontSize: typeScale.body, lineHeight: 34 },
+  guidance: {
+    color: colors.primary,
+    fontSize: typeScale.caption,
+    fontWeight: "700",
+    lineHeight: 28,
+    marginBottom: space.sm,
+  },
   warning: { color: colors.danger, fontSize: typeScale.caption, marginBottom: space.sm },
 });
