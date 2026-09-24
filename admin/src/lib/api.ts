@@ -235,6 +235,9 @@ export type ReportRow = {
   created_at: string;
   handled_at: string | null;
   reportedName: string;
+  reportedRole: "requester" | "volunteer";
+  /** 依頼者の利用停止（通報が3人から集まると自動で掛かる） */
+  reportedBlocked: boolean;
 };
 
 export const REASON_LABEL: Record<string, string> = {
@@ -262,15 +265,29 @@ export async function fetchReports(onlyOpen: boolean): Promise<ReportRow[]> {
   const ids = [...new Set(rows.map((r) => r.reported_id))];
   const { data: profiles } = await supabase
     .from("profiles")
-    .select("id, display_name")
+    .select("id, display_name, role, is_blocked")
     .in("id", ids);
 
-  const nameOf = new Map((profiles ?? []).map((p) => [p.id, p.display_name as string]));
+  const profileOf = new Map((profiles ?? []).map((p) => [p.id as string, p]));
 
-  return rows.map((r) => ({
-    ...r,
-    reportedName: nameOf.get(r.reported_id) || "(名前未設定)",
-  })) as ReportRow[];
+  return rows.map((r) => {
+    const p = profileOf.get(r.reported_id);
+    return {
+      ...r,
+      reportedName: (p?.display_name as string) || "(名前未設定)",
+      reportedRole: (p?.role as "requester" | "volunteer") ?? "requester",
+      reportedBlocked: p?.is_blocked === true,
+    };
+  }) as ReportRow[];
+}
+
+/**
+ * 利用停止を掛ける・外す。依頼者にとっては「助けを呼べなくなる」ことなので、
+ * 通報で自動的に止まった人を運営が見直して外せるようにしてある。
+ */
+export async function setUserBlocked(userId: string, blocked: boolean): Promise<void> {
+  const { error } = await supabase.rpc("set_user_blocked", { p_user: userId, p_blocked: blocked });
+  if (error) throw error;
 }
 
 export async function handleReport(id: string): Promise<void> {

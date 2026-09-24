@@ -14,6 +14,7 @@
 
 import io
 import json
+import os
 import urllib.request
 import uuid
 
@@ -62,7 +63,10 @@ def ocr(img: Image.Image) -> dict:
     request = urllib.request.Request(
         "http://localhost:8080/ocr",
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "x-ocr-token": os.environ.get("OCR_TOKEN", "local-dev-ocr-token"),
+        },
     )
     with urllib.request.urlopen(request, timeout=300) as response:
         return json.load(response)

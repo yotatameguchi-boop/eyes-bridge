@@ -22,6 +22,7 @@ const API = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const LIVEKIT_HTTP = Deno.env.get("LIVEKIT_HTTP") ?? "http://127.0.0.1:7880";
+const OCR_HTTP = Deno.env.get("OCR_HTTP") ?? "http://127.0.0.1:8081";
 const card = await Deno.readFile(Deno.env.get("E2E_CARD_JPG")!);
 const selfie = await Deno.readFile(Deno.env.get("E2E_SELFIE_JPG")!);
 
@@ -133,6 +134,18 @@ try {
     ok(await livekitAccepts(rt.json.token), "発行したトークンを LiveKit が受け付ける");
   }
 
+  console.log("--- 1b. 依頼の表を好きに書き換えられない ---");
+  const second = await requester.client.from("help_requests").insert({ requester_id: requester.id });
+  ok(second.error?.message.includes("REQUEST_ALREADY_OPEN") ?? false,
+    "待っている依頼があるうちは2件目を立てられない", second.error?.message);
+  const backdated = await requester.client.from("help_requests")
+    .insert({ requester_id: requester.id, created_at: "2000-01-01T00:00:00Z" });
+  ok(!!backdated.error, "作成時刻をずらして立てられない（上限のすり抜けを防ぐ）");
+  const tamper = await requester.client.from("help_requests")
+    .update({ state: "queued", rung_at: null }).eq("id", requestId).select();
+  ok(!!tamper.error || (tamper.data?.length ?? 0) === 0, "自分の依頼でも直接は書き換えられない",
+    JSON.stringify(tamper.data));
+
   console.log("--- 2. 審査前のボランティア ---");
   const early = await invoke(volunteer, "livekit-token", { requestId });
   ok(early.status === 404 || early.status === 403, "当事者でないボランティアにはトークンを出さない", `HTTP ${early.status}`);
@@ -184,12 +197,40 @@ try {
     ok(await livekitAccepts(vt.json.token), "ボランティアのトークンも LiveKit が受け付ける");
   }
 
-  console.log("--- 7. 着信の送信 ---");
+  console.log("--- 7. 通話を終えて、次の依頼と着信 ---");
+  // 未処理の依頼は1人1件なので、前の通話を終えてから次を立てる
+  const ended = await requester.client.rpc("end_help_request", { p_request: requestId, p_state: "completed" });
+  ok(!ended.error, "依頼者は通話を終えられる", ended.error?.message);
   const req2 = await requester.client.from("help_requests").insert({ requester_id: requester.id }).select().single();
+  ok(!req2.error, "通話を終えれば次の依頼を立てられる", req2.error?.message);
   const ring = await invoke(requester, "ring-volunteers", { requestId: req2.data.id });
   ok(ring.status === 200, "ring-volunteers が動く", `HTTP ${ring.status} ${ring.text}`);
+  const ringAgain = await invoke(requester, "ring-volunteers", { requestId: req2.data.id });
+  ok(ringAgain.status === 409 && ringAgain.json?.error === "ALREADY_RUNG",
+    "同じ依頼で2回目の着信は送れない（着信の連打を防ぐ）", `HTTP ${ringAgain.status} ${ringAgain.text}`);
   const ringByOther = await invoke(volunteer, "ring-volunteers", { requestId: req2.data.id });
   ok(ringByOther.status === 403, "依頼者以外は着信を送れない", `HTTP ${ringByOther.status}`);
+
+  console.log("--- 7b. 写真の読み取り ---");
+  const post = async (url: string, headers: Record<string, string>) => {
+    const form = new FormData();
+    form.append("image", new Blob([card], { type: "image/jpeg" }), "card.jpg");
+    const res = await fetch(url, { method: "POST", headers, body: form });
+    const text = await res.text();
+    let body: any = null;
+    try { body = JSON.parse(text); } catch { /* JSON でない */ }
+    return { status: res.status, body };
+  };
+  const direct = await post(`${OCR_HTTP}/ocr`, {});
+  ok(direct.status === 403, "OCR サーバは鍵なしでは直接使えない", `HTTP ${direct.status}`);
+  const anon = await post(`${API}/functions/v1/read-image`, { apikey: ANON, Authorization: `Bearer ${ANON}` });
+  ok(anon.status === 401, "ログインしていなければ読み取りは使えない", `HTTP ${anon.status}`);
+  const token = (await requester.client.auth.getSession()).data.session!.access_token;
+  const read = await post(`${API}/functions/v1/read-image`, { apikey: ANON, Authorization: `Bearer ${token}` });
+  ok(read.status === 200 && read.body?.text?.includes("運転免許証"),
+    "ログインしていれば read-image を通して読める", `HTTP ${read.status}`);
+  ok(Array.isArray(read.body?.blocks?.[0]?.box) && typeof read.body?.frame?.blur === "number",
+    "撮影の案内に使う位置と写り方も返る");
 
   console.log("--- 8. 通報 ---");
   const report = await requester.client.rpc("report_participant", {

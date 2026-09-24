@@ -22,7 +22,7 @@ import uuid
 from PIL import Image, ImageDraw, ImageFont
 
 FONT = "/tmp/jp.ttc"
-TOKEN = os.environ.get("INSPECT_TOKEN", "local-dev-inspect-token")
+TOKEN = os.environ.get("OCR_TOKEN", "local-dev-ocr-token")
 
 if not os.path.exists(FONT):
     print(f"{FONT} がありません。ファイル冒頭の手順でフォントを持ち込んでください。")
@@ -74,7 +74,7 @@ def post(path: str, fields: dict, files: dict) -> dict:
         data=b"".join(parts),
         headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "x-inspect-token": TOKEN,
+            "x-ocr-token": TOKEN,
         },
     )
     with urllib.request.urlopen(request, timeout=900) as response:

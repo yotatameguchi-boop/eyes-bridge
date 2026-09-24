@@ -113,6 +113,8 @@ set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b3"}';
 select agree_to_terms();
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000a1"}';
 insert into blocks (blocker_id, blocked_id) values (auth.uid(), '00000000-0000-0000-0000-0000000000b3');
+-- 未処理の依頼は1人1件なので、前の通話を終えてから次を立てる
+select end_help_request('aaaa0001-0000-0000-0000-000000000001', 'completed');
 insert into help_requests (id, requester_id) values ('aaaa0002-0000-0000-0000-000000000002', auth.uid());
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b3"}';
 select t_expect((select count(*) from help_requests where state='queued') = 0, 'ブロックされた人には依頼が見えない');

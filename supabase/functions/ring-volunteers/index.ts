@@ -56,6 +56,15 @@ Deno.serve(serveJson(async (req) => {
   if (request.requester_id !== userId) throw new HttpError(403, "NOT_THE_REQUESTER");
   if (request.state !== "queued") throw new HttpError(409, "REQUEST_NOT_QUEUED");
 
+  // 着信は1依頼につき1回だけ。以前は同じ依頼で何度でも呼べたため、
+  // ボランティアのスマホを延々と鳴らす嫌がらせができた。
+  // 「鳴らした」印は DB で1回だけ付くので、同時に呼ばれても鳴るのは1回。
+  const { data: first, error: markError } = await db.rpc("mark_request_rung", {
+    p_request: request.id,
+  });
+  if (markError) throw new HttpError(500, markError.message);
+  if (first !== true) throw new HttpError(409, "ALREADY_RUNG");
+
   // 宛先の取得だけは service-role で行う。
   // 他人の push トークンは RLS で依頼者に見せていないため。
   const admin = createClient(

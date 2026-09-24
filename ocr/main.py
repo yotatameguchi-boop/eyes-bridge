@@ -44,9 +44,13 @@ DET_MODEL = os.environ.get("OCR_DET_MODEL", "PP-OCRv5_mobile_det")
 REC_MODEL = os.environ.get("OCR_REC_MODEL", "PP-OCRv5_mobile_rec")
 
 app = FastAPI(title="eyes-bridge OCR")
+
+# ブラウザから直接呼ばれることは無い（呼ぶのは Edge Function だけ）ので、
+# 既定ではどのサイトにも許可しない。以前は "*" で、どこのサイトからでも呼べた。
+_origins = [o for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("ALLOWED_ORIGINS", "*").split(","),
+    allow_origins=_origins,
     allow_methods=["POST"],
     allow_headers=["*"],
 )
@@ -190,13 +194,32 @@ def extract(image: np.ndarray) -> tuple[list[Line], int]:
     return lines, angle
 
 
+# --------------------------------------------------------------- 呼び出しの鍵
+# このサーバを呼べるのは Edge Function（read-image / inspect-identity）だけ。
+# 以前は /ocr に鍵が無く、URL が分かれば誰でも無料の読み取りとして使えた。
+# 利用者の認証と回数の上限は Edge Function 側で行い、ここは共有の鍵だけを見る。
+OCR_TOKEN = os.environ.get("OCR_TOKEN")
+
+
+def require_token(x_ocr_token: str | None) -> None:
+    # 未設定なら開けない。設定し忘れを「誰でも通る」で吸収しない。
+    if not OCR_TOKEN:
+        raise HTTPException(status_code=503, detail="OCR_NOT_CONFIGURED")
+    if x_ocr_token != OCR_TOKEN:
+        raise HTTPException(status_code=403, detail="BAD_OCR_TOKEN")
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/ocr", response_model=OcrResponse)
-async def ocr(image: UploadFile = File(...)) -> OcrResponse:
+async def ocr(
+    image: UploadFile = File(...),
+    x_ocr_token: str | None = Header(None),
+) -> OcrResponse:
+    require_token(x_ocr_token)
     raw = await image.read()
     if len(raw) == 0:
         raise HTTPException(status_code=400, detail="EMPTY_IMAGE")
@@ -225,7 +248,6 @@ async def ocr(image: UploadFile = File(...)) -> OcrResponse:
 #
 # 呼べるのは inspect-identity（Edge Function）だけ。
 # 本人確認書類が飛んでくる口を、誰でも叩ける状態にしない。
-INSPECT_TOKEN = os.environ.get("INSPECT_TOKEN")
 
 
 @app.post("/inspect-document", response_model=InspectResponse)
@@ -233,13 +255,9 @@ async def inspect_endpoint(
     kind: str = Form(...),
     front: UploadFile = File(...),
     selfie: UploadFile | None = File(None),
-    x_inspect_token: str | None = Header(None),
+    x_ocr_token: str | None = Header(None),
 ) -> InspectResponse:
-    # 未設定なら開けない。設定し忘れを「誰でも通る」で吸収しない。
-    if not INSPECT_TOKEN:
-        raise HTTPException(status_code=503, detail="INSPECT_NOT_CONFIGURED")
-    if x_inspect_token != INSPECT_TOKEN:
-        raise HTTPException(status_code=403, detail="BAD_INSPECT_TOKEN")
+    require_token(x_ocr_token)
 
     front_raw = await front.read()
     if not front_raw:

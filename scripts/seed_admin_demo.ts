@@ -79,6 +79,11 @@ await admin.from("help_requests").insert({
     p_request: data.id, p_reason: "privacy",
     p_detail: "頼んでいない書類の裏側を見せるよう何度も言われた（デモ）", p_block: true,
   });
+  // 依頼者への通報も入れる（運営画面の「利用を止める／外す」を試せるように）
+  await hanako.client.rpc("report_participant", {
+    p_request: data.id, p_reason: "harassment",
+    p_detail: "読む以外のことを繰り返し頼まれた（デモ）", p_block: false,
+  });
 });
 
 console.log("\n運営ログイン: ops-demo@example.test（コードは http://127.0.0.1:54324 の Mailpit に届く）");

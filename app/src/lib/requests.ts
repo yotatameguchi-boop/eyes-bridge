@@ -3,18 +3,50 @@ import { supabase, type HelpRequest, type RequestState } from "./supabase";
 
 export type QueueHandle = { unsubscribe: () => void };
 
-/** 依頼を立てて、待機中のボランティア全員を鳴らす。 */
+/** 依頼を立てられなかった理由。画面はこれを見て言うことを変える。 */
+export type RequestErrorCode = "ALREADY_OPEN" | "RATE_LIMITED" | "BLOCKED" | "FAILED";
+
+export class RequestError extends Error {
+  constructor(readonly code: RequestErrorCode) {
+    super(code);
+  }
+}
+
+function requestErrorCode(message: string): RequestErrorCode {
+  if (message.includes("REQUEST_ALREADY_OPEN")) return "ALREADY_OPEN";
+  if (message.includes("RATE_LIMITED")) return "RATE_LIMITED";
+  if (message.includes("REQUESTER_BLOCKED")) return "BLOCKED";
+  return "FAILED";
+}
+
+/** 依頼を立てて、待機中のボランティアを鳴らす。 */
 export async function createHelpRequest(language = "ja"): Promise<HelpRequest> {
   const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) throw new Error("NOT_SIGNED_IN");
+  if (!auth.user) throw new RequestError("FAILED");
+  const me = auth.user.id;
 
-  const { data, error } = await supabase
-    .from("help_requests")
-    .insert({ requester_id: auth.user.id, language })
-    .select()
-    .single();
+  const insert = () =>
+    supabase.from("help_requests").insert({ requester_id: me, language }).select().single();
 
-  if (error) throw error;
+  let { data, error } = await insert();
+
+  // 未処理の依頼は1人1件まで（DB で強制している）。
+  // アプリが落ちて、前の依頼が「待っている」まま残っていることがある。
+  // 自分の待っている依頼なら取り下げて、1回だけ立て直す。
+  // 通話中の依頼が残っている場合は立て直さない（ALREADY_OPEN を返す）。
+  if (error && requestErrorCode(error.message) === "ALREADY_OPEN") {
+    const { data: stale } = await supabase
+      .from("help_requests")
+      .select("id")
+      .eq("requester_id", me)
+      .eq("state", "queued");
+    if (stale && stale.length > 0) {
+      await Promise.all(stale.map((r) => endRequest(r.id as string, "cancelled")));
+      ({ data, error } = await insert());
+    }
+  }
+
+  if (error || !data) throw new RequestError(error ? requestErrorCode(error.message) : "FAILED");
 
   // 鳴らすのに失敗しても依頼自体は生きている。
   // Presence でアプリを開いている人には Realtime で届くので、

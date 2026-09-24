@@ -13,6 +13,8 @@
 
 services:
   db:
+    # Docker（Docker Desktop）が再起動しても、手で上げ直さなくていいように
+    restart: unless-stopped
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: postgres
@@ -36,6 +38,8 @@ services:
       retries: 20
 
   livekit:
+    # Docker（Docker Desktop）が再起動しても、手で上げ直さなくていいように
+    restart: unless-stopped
     image: livekit/livekit-server:latest
     # --dev は固定の鍵（devkey / secret）で起動する。
     # 本番の鍵をここに書かないための開発専用モード。
@@ -51,16 +55,17 @@ services:
       retries: 10
 
   ocr:
+    # Docker（Docker Desktop）が再起動しても、手で上げ直さなくていいように
+    restart: unless-stopped
     build: ./ocr
     ports:
       # 8080 は他のプロジェクトと衝突しやすいので既定をずらす。
       # OCR_PORT=xxxx で変えられる。
       - "${OCR_PORT:-8081}:8080"
     environment:
-      ALLOWED_ORIGINS: "*"
-      # 本人確認書類が飛んでくる口なので、未設定だと 503 で閉じる。
+      # 呼べるのは Edge Function だけ。未設定だと全部の口が 503 で閉じる。
       # 手元用の固定値。本番では必ず変える。
-      INSPECT_TOKEN: "${INSPECT_TOKEN:-local-dev-inspect-token}"
+      OCR_TOKEN: "${OCR_TOKEN:-local-dev-ocr-token}"
       # 既定は mobile 系。精度を上げたいときだけ server 系に戻す
       # （そのぶんモデルが数百MBになり、初回取得が長い）
       OCR_DET_MODEL: "${OCR_DET_MODEL:-PP-OCRv5_mobile_det}"
@@ -80,6 +85,8 @@ services:
   # 既定では立ち上げない（キーが要るので）。使うときだけ:
   #   ADMIN_SUPABASE_ANON_KEY=... docker compose --profile admin up -d --build admin
   admin:
+    # Docker（Docker Desktop）が再起動しても、手で上げ直さなくていいように
+    restart: unless-stopped
     profiles: ["admin"]
     build:
       context: ./admin

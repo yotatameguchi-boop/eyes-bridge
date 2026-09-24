@@ -18,8 +18,8 @@ Deno.serve(serveJson(async (req) => {
   }
 
   const ocrUrl = Deno.env.get("OCR_URL");
-  const inspectToken = Deno.env.get("INSPECT_TOKEN");
-  if (!ocrUrl || !inspectToken) throw new HttpError(503, "INSPECT_NOT_CONFIGURED");
+  const ocrToken = Deno.env.get("OCR_TOKEN");
+  if (!ocrUrl || !ocrToken) throw new HttpError(503, "INSPECT_NOT_CONFIGURED");
 
   // RLS 越しに読む。本人か運営でなければ行が返らない。
   const { data: verification, error } = await db
@@ -61,7 +61,7 @@ Deno.serve(serveJson(async (req) => {
 
   const response = await fetch(`${ocrUrl}/inspect-document`, {
     method: "POST",
-    headers: { "x-inspect-token": inspectToken },
+    headers: { "x-ocr-token": ocrToken },
     body: form,
   });
 

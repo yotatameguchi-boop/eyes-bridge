@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentRef } from "rea
 import { AccessibilityInfo, ActivityIndicator, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { BigButton } from "../components/BigButton";
-import { ocrAvailable, readImage } from "../lib/ocr";
+import { OcrError, readImage, type OcrErrorCode } from "../lib/ocr";
 import { composeReading, THRESHOLDS, type Reading } from "../lib/framing";
 import {
   feedback,
@@ -13,6 +13,16 @@ import {
   useScreenReader,
 } from "../lib/a11y";
 import { colors, space, type as typeScale } from "../theme";
+
+// 読めなかったときに言うこと。何が起きて、どうすればいいかまで言う
+const OCR_ERROR_MESSAGE: Record<OcrErrorCode, string> = {
+  RATE_LIMITED: "続けて読み取りすぎました。少し時間をおいてから、もう一度お試しください",
+  BLOCKED: "この機能の利用が止められています。運営にお問い合わせください",
+  NOT_SIGNED_IN: "ログインが切れています。もう一度ログインしてください",
+  NOT_CONFIGURED: "読み上げの準備ができていません。しばらくしてからお試しください",
+  BAD_IMAGE: "写真を読み込めませんでした。もう一度撮ってください",
+  FAILED: "読み取れませんでした。通信を確かめて、もう一度撮ってください",
+};
 
 export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
   const [busy, setBusy] = useState(false);
@@ -67,8 +77,9 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
       setLowConfidence(result.blocks.some((b) => b.confidence < THRESHOLDS.lowConfidence));
       setText(result.text);
       setReading(next);
-    } catch {
-      await notifyStateChange("読み取れませんでした。通信を確かめて、もう一度撮ってください", "failed");
+    } catch (e) {
+      const code: OcrErrorCode = e instanceof OcrError ? e.code : "FAILED";
+      await notifyStateChange(OCR_ERROR_MESSAGE[code], "failed");
     } finally {
       setBusy(false);
     }
@@ -76,17 +87,6 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
 
   function repeat() {
     if (spoken) void readLongText(spoken, focusResult);
-  }
-
-  if (!ocrAvailable) {
-    return (
-      <View style={styles.root}>
-        <Text style={styles.message}>
-          読み上げサーバが設定されていません。EXPO_PUBLIC_OCR_URL を設定してください。
-        </Text>
-        <BigButton label="戻る" variant="secondary" onPress={onBack} />
-      </View>
-    );
   }
 
   const hasText = !!text && text.trim().length > 0;
@@ -160,7 +160,6 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg, padding: space.md },
-  message: { color: colors.text, fontSize: typeScale.body, lineHeight: 32, marginBottom: space.md },
   result: {
     backgroundColor: colors.surface,
     borderRadius: 16,

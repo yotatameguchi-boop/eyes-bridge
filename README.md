@@ -155,7 +155,22 @@ RLS は「どの行を触れるか」しか制御しないので、「自分の�
 片方向だと、通報された側が相手を選んで取り続けられる。`blocked_between()` が
 どちらの向きのブロックも見て、`claim_help_request` と RLS と着信送信の3か所で弾く。
 
+**アカウントを作っただけで悪用できないようにする。**
+誰でも登録できるので、1アカウントで何ができるかを DB 側で絞っている
+（`0009_abuse_limits.sql`）。以前はスクリプト1本で、待機中のボランティア最大50人の
+スマホを着信画面で延々と鳴らせた。
+
+* 依頼の表は直接書き換えられない。作るときに書けるのは「誰の依頼か」と言語だけで、
+  作成時刻・部屋名・状態はサーバが決める（作成時刻を書かせると上限をすり抜けられる）
+* 未処理の依頼は1人1件、10分に6件・1日40件まで。撮り直しや再依頼を妨げない程度に緩く取ってある。
+  アプリが落ちて依頼が残った場合は、アプリが自分の待っている依頼を取り下げてから立て直す
+* 着信は1依頼につき1回。「鳴らした」印を DB で1回だけ付けるので、同時に呼ばれても鳴るのは1回
+* 読み取りは10分に30回まで
+
 **別々の3人から通報されると自動で停止する。**
+ボランティアは待機を止め、依頼者は利用を止める（以前は依頼者は何人から通報されても
+止まらなかった）。依頼者にとって利用停止は「助けを呼べなくなる」ことなので、
+運営画面の通報一覧から見直して外せるようにしてある。
 1人が連打しても止まらないよう、`count(distinct reporter_id)` で数える。
 
 ### 最初の管理者を作る
@@ -215,6 +230,7 @@ supabase functions deploy livekit-token
 supabase functions deploy ring-volunteers
 supabase functions deploy inspect-identity
 supabase functions deploy purge-identity-documents
+supabase functions deploy read-image
 ```
 
 手元で全部を立てる場合は下の「手元で通しで動かす」を参照。
@@ -321,18 +337,20 @@ docker compose exec -T ocr python - < ocr/test_japanese_sample.py
 docker compose exec -T ocr rm -f /tmp/jp.ttc
 ```
 
-`app/.env` に `EXPO_PUBLIC_OCR_URL=http://<ホスト>:8081` を足すと「機械に読ませる」が有効になる。
-未設定でも通話側は動く。
+**OCR サーバは外に公開しない。** 呼べるのは Edge Function だけ
+（読み上げは `read-image`、本人確認は `inspect-identity`）。アプリは OCR サーバを直接呼ばない。
+利用者のログインと回数の上限は Edge Function 側で確かめ、OCR サーバは共有の鍵
+（`OCR_TOKEN`）だけを見る。どのサイトからの呼び出しも許可していない（CORS）。
+以前は `/ocr` に鍵が無く、URL が分かれば誰でも無料の読み取りとして使えた。
 
-本人確認の自動チェックを使う場合は、OCR サーバに `INSPECT_TOKEN` を設定し、
-同じ値を Edge Function 側にも渡す:
+OCR サーバと Edge Function に同じ鍵を渡す:
 
 ```bash
-supabase secrets set OCR_URL=http://<ホスト>:8081 INSPECT_TOKEN=<共有する秘密>
+supabase secrets set OCR_URL=http://<ホスト>:8081 OCR_TOKEN=<共有する秘密>
 ```
 
-`INSPECT_TOKEN` が未設定だと `/inspect-document` は 503 で閉じる。
-本人確認書類が飛んでくる口を、設定し忘れで誰でも叩ける状態にしないため。
+`OCR_TOKEN` が未設定だと、OCR サーバはすべての口を 503 で閉じる。
+設定し忘れを「誰でも通る」で吸収しないため。
 
 ## 手元で通しで動かす
 
@@ -352,7 +370,7 @@ LIVEKIT_URL=ws://host.docker.internal:7880
 LIVEKIT_API_KEY=devkey
 LIVEKIT_API_SECRET=secret
 OCR_URL=http://host.docker.internal:8081
-INSPECT_TOKEN=local-dev-inspect-token
+OCR_TOKEN=local-dev-ocr-token
 ```
 
 運営画面を触ってみるデモデータ（運営は `ops-demo@example.test`。
@@ -373,12 +391,12 @@ deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean
 4種類ある。上から速い順。
 
 ```bash
-./supabase/tests/run.sh                                        # SQL 51件（stub。Supabase 不要）
+./supabase/tests/run.sh                                        # SQL 80件（stub。Supabase 不要）
 SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-  ./supabase/tests/run.sh                                      # SQL 51件（本物の Supabase）
+  ./supabase/tests/run.sh                                      # SQL 80件（本物の Supabase）
 (cd supabase/functions && deno test --allow-env --allow-read _tests/)   # Edge Function 6件
 (cd app && npm test)                                           # 読み上げの振り分けと撮影の案内 25件
-deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 30件
+deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 40件
 ```
 
 SQL テストは同じファイルを stub と本物の両方に流せる。stub は速いが、
@@ -395,7 +413,7 @@ SQL テストは同じファイルを stub と本物の両方に流せる。stub
 PASS が1件も無いことも失敗として扱う（接続に失敗して何も走らなかったのに
 「通った」と報告していたことがあるため）。
 
-SQL テストで確かめていること（51件）:
+SQL テストで確かめていること（80件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -415,6 +433,13 @@ SQL テストで確かめていること（51件）:
 * 自動チェックは service role しか書けない（運営でも本人でも直接書けない）
 * 別アカウントのほぼ同じ書類に `duplicate_document` が立ち、別物では立たない
 * 通報を処理済みにできるのは運営だけ
+* 依頼の表を直接書き換えられない（作成時刻をずらして上限をすり抜ける、状態を変える、を含む）
+* 未処理の依頼は1人1件。ただし時間切れで残った依頼では閉じ込めない
+* 依頼は10分に6件・1日40件まで。サーバ側からの登録には掛けない
+* 着信は1依頼につき1回だけ送れる
+* 依頼者も、別々の3人から通報されると利用が止まり、待っている依頼は取り下げられる
+* 利用停止を外せるのは運営だけ（自分では外せない）
+* 読み取りは10分に30回まで。止まっている人・未ログインは使えない
 
 アプリのテスト（25件。端末不要、`node --test`）:
 
@@ -427,13 +452,16 @@ Edge Function のテスト（6件）:
 * トークンの JWT に載る権限が、依頼者は `camera`+`microphone`、ボランティアは `microphone` だけ
 * APNs のプロバイダトークンの署名を、その場で作った P-256 の鍵の公開鍵で検証できる
 
-通しのテスト `scripts/e2e_local.ts`（30件）:
+通しのテスト `scripts/e2e_local.ts`（40件）:
 
 * 発行したトークンを LiveKit サーバ自身が受け付ける（`/rtc/validate`）
 * 書類 → Storage → `inspect-identity` → OCR コンテナ → 判定の保存、が一本でつながる
 * 別アカウントが同じ書類を出すと `duplicate_document` が立つ
 * 審査前は依頼を取れず、本人確認と承認を経ると取れる
 * 期限切れの書類画像が Storage から実際に消え、審査の結果は残る
+* 2件目の依頼・作成時刻の改ざん・依頼の直接の書き換えが、どれも通らない
+* 同じ依頼で2回目の着信は `ALREADY_RUNG` で断られる
+* OCR サーバは鍵なしでは使えず、ログインしていれば `read-image` を通して読める
 
 ## まだ塞いでいない穴
 
@@ -467,9 +495,9 @@ Edge Function のテスト（6件）:
 
 済んでいるもの:
 
-* SQL テスト 51件を **stub と本物の Supabase の両方で**（マイグレーション8本）
+* SQL テスト 80件を **stub と本物の Supabase の両方で**（マイグレーション9本）
 * Edge Function 4本の Deno の型チェックと、単体テスト 6件
-* 通しのテスト 30件（本物の Supabase + Edge Functions + LiveKit + OCR）
+* 通しのテスト 40件（本物の Supabase + Edge Functions + LiveKit + OCR）
 * 運営画面を**ブラウザで実際に操作**：コードでのログイン、書類画像の表示
   （署名付き URL）、旗の表示、理由なしの却下を止める、本人確認の承認、
   本人確認が済むまでボランティアの承認ボタンが押せない、通報の対応。

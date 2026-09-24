@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import { BigButton } from "../components/BigButton";
-import { createHelpRequest, endRequest, watchRequest, type QueueHandle } from "../lib/requests";
+import {
+  createHelpRequest,
+  endRequest,
+  RequestError,
+  watchRequest,
+  type QueueHandle,
+  type RequestErrorCode,
+} from "../lib/requests";
 import { watchAvailableCount } from "../lib/presence";
 import { notifyStateChange, say } from "../lib/a11y";
 import type { HelpRequest } from "../lib/supabase";
@@ -10,6 +17,14 @@ import { colors, space, type as typeScale } from "../theme";
 type Props = {
   onConnected: (request: HelpRequest) => void;
   onReadAloud: () => void;
+};
+
+// 依頼を立てられなかったときに言うこと。何が起きて、どうすればいいかまで言う
+const REQUEST_ERROR_MESSAGE: Record<RequestErrorCode, string> = {
+  ALREADY_OPEN: "通話中の依頼があります。先にその通話を終えてください",
+  RATE_LIMITED: "続けて依頼しすぎました。少し時間をおいてから、もう一度お試しください",
+  BLOCKED: "利用が止められています。運営にお問い合わせください",
+  FAILED: "依頼を出せませんでした。通信を確認してください",
 };
 
 // 誰も取らないまま待たせ続けない。3分は DB 側の expire_stale_requests と揃える。
@@ -70,8 +85,9 @@ export function RequesterHomeScreen({ onConnected, onReadAloud }: Props) {
           void notifyStateChange("今は誰も見つかりませんでした", "failed");
         }
       });
-    } catch {
-      await notifyStateChange("依頼を出せませんでした。通信を確認してください", "failed");
+    } catch (e) {
+      const code: RequestErrorCode = e instanceof RequestError ? e.code : "FAILED";
+      await notifyStateChange(REQUEST_ERROR_MESSAGE[code], "failed");
     }
   }
 
