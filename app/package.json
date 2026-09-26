@@ -9,7 +9,8 @@
     "ios": "expo run:ios",
     "prebuild": "expo prebuild --clean",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "test": "node --test src/lib/*.test.ts"
+    "test": "node --test 'src/**/*.test.ts'",
+    "legal:docs": "node scripts/gen-legal-docs.ts"
   },
   "dependencies": {
     "@config-plugins/react-native-callkeep": "^14.0.2",

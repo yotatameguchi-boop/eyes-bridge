@@ -7,6 +7,7 @@
 // E2E_CARD_JPG / E2E_SELFIE_JPG）。運営としてのログインは
 // ops-demo@example.test にメールで6桁コードが届く（ローカルでは Mailpit）。
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { PRIVACY, SENSITIVE, TERMS } from "../app/src/legal/documents.ts";
 
 const API = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -40,8 +41,14 @@ async function user(email: string, name: string, role: "requester" | "volunteer"
   if (error) throw error;
   const client = createClient(API, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
   await client.auth.signInWithPassword({ email, password });
-  await client.from("profiles").insert({ id: data.user.id, role, display_name: name });
-  if (role === "volunteer") await client.from("volunteer_status").insert({ user_id: data.user.id });
+  const { error: regError } = await client.rpc("register_role", {
+    p_role: role,
+    p_display_name: name,
+    p_terms: TERMS.version,
+    p_privacy: PRIVACY.version,
+    p_sensitive: role === "requester" ? SENSITIVE.version : null,
+  });
+  if (regError) throw regError;
   return { id: data.user.id, client };
 }
 

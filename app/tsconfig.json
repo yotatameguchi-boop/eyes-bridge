@@ -16,6 +16,7 @@
   ],
   "exclude": [
     "**/*.test.ts",
+    "scripts/**",
     "node_modules"
   ]
 }

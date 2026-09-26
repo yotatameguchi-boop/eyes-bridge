@@ -46,6 +46,13 @@ insert into profiles (id, role, display_name, is_admin) values
   ('00000000-0000-0000-0000-00000000bb03', 'volunteer', 'W3', false),
   ('00000000-0000-0000-0000-00000000cc01', 'volunteer', 'A',  true);
 
+-- 同意の記録（0010_consents.sql）。この後のテストは同意済みの利用者として動かす。
+-- 同意そのものの確認は consent_test.sql
+insert into consents (user_id, document, version)
+select p.id, d, current_consent_version(d)
+  from profiles p cross join unnest(array['terms', 'privacy', 'sensitive']) as d
+on conflict do nothing;
+
 \echo '--- 1. 依頼の表を直接書き換えられない ---'
 set role authenticated;
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-00000000aa01"}';

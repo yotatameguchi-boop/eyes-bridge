@@ -43,6 +43,13 @@ insert into profiles (id, role, display_name, is_admin) values
   ('00000000-0000-0000-0000-0000000000b4','volunteer','V4',  false),
   ('00000000-0000-0000-0000-0000000000c1','volunteer','A',   true);
 
+-- 同意の記録（0010_consents.sql）。この後のテストは同意済みの利用者として動かす。
+-- 同意そのものの確認は consent_test.sql
+insert into consents (user_id, document, version)
+select p.id, d, current_consent_version(d)
+  from profiles p cross join unnest(array['terms', 'privacy', 'sensitive']) as d
+on conflict do nothing;
+
 insert into volunteer_status (user_id) values
   ('00000000-0000-0000-0000-0000000000b1'),
   ('00000000-0000-0000-0000-0000000000b2'),

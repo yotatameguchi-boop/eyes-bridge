@@ -17,6 +17,7 @@
 // card.jpg は日本語の見本（ocr/test_japanese_sample.py と同じ作り方）。
 // 実在の書類の画像は使わないこと。
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
+import { PRIVACY, SENSITIVE, TERMS } from "../app/src/legal/documents.ts";
 
 const API = Deno.env.get("SUPABASE_URL") ?? "http://127.0.0.1:54321";
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
@@ -61,13 +62,15 @@ async function makeUser(tag: string, role: "requester" | "volunteer"): Promise<U
   const signIn = await client.auth.signInWithPassword({ email, password });
   if (signIn.error) throw signIn.error;
 
-  // プロフィールは本人の権限で作る（列権限の経路もここで通る）
-  const p = await client.from("profiles").insert({ id: data.user.id, role, display_name: tag });
+  // 役割は同意と一緒にだけ登録できる（アプリと同じ経路。版はアプリの文書から取る）
+  const p = await client.rpc("register_role", {
+    p_role: role,
+    p_display_name: tag,
+    p_terms: TERMS.version,
+    p_privacy: PRIVACY.version,
+    p_sensitive: role === "requester" ? SENSITIVE.version : null,
+  });
   if (p.error) throw p.error;
-  if (role === "volunteer") {
-    const v = await client.from("volunteer_status").insert({ user_id: data.user.id, language: "ja" });
-    if (v.error) throw v.error;
-  }
   return { id: data.user.id, client };
 }
 
@@ -118,6 +121,30 @@ try {
   const other = await makeUser("other", "volunteer");
   const operator = await makeUser("operator", "volunteer");
   await admin.from("profiles").update({ is_admin: true }).eq("id", operator.id);
+
+  console.log("--- 0. 同意 ---");
+  {
+    // 同意の前に、役割（＝見えにくさがあることを示す情報）を保存させない
+    const email = `e2e-noconsent-${stamp}@example.test`;
+    const password = crypto.randomUUID();
+    const { data: u } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+    created.push(u.user!.id);
+    const c = createClient(API, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+    await c.auth.signInWithPassword({ email, password });
+
+    const noSensitive = await c.rpc("register_role", {
+      p_role: "requester", p_display_name: "x",
+      p_terms: TERMS.version, p_privacy: PRIVACY.version, p_sensitive: null,
+    });
+    ok(noSensitive.error?.message.includes("SENSITIVE_CONSENT_REQUIRED") ?? false,
+      "要配慮個人情報への同意が無いと、依頼者として登録できない", noSensitive.error?.message);
+    const direct = await c.from("profiles").insert({ id: u.user!.id, role: "requester" });
+    ok(!!direct.error, "同意を通さずに、役割を直接書き込めない");
+    const stored = await admin.from("profiles").select("id").eq("id", u.user!.id);
+    ok((stored.data?.length ?? -1) === 0, "断られたとき、役割は保存されていない");
+    const consents = await admin.from("consents").select("document").eq("user_id", u.user!.id);
+    ok((consents.data?.length ?? -1) === 0, "断られたとき、同意の記録も残らない（中途半端に保存しない）");
+  }
 
   console.log("--- 1. 依頼者のトークン ---");
   const req = await requester.client.from("help_requests").insert({ requester_id: requester.id }).select().single();

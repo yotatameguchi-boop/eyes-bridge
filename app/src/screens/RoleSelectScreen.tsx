@@ -1,25 +1,13 @@
-import { useState } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { BigButton } from "../components/BigButton";
-import { chooseRole, type Profile, type Role } from "../lib/session";
-import { notifyStateChange } from "../lib/a11y";
+import type { Role } from "../lib/session";
 import { colors, space, type as typeScale } from "../theme";
 
-export function RoleSelectScreen({ onDone }: { onDone: (profile: Profile) => void }) {
-  const [busy, setBusy] = useState(false);
-
-  async function pick(role: Role) {
-    setBusy(true);
-    try {
-      const profile = await chooseRole(role);
-      await notifyStateChange(
-        role === "requester" ? "読んでもらう側で始めます" : "読む側で始めます",
-      );
-      onDone(profile);
-    } finally {
-      setBusy(false);
-    }
-  }
+// ここでは役割を保存しない。選んだだけで「依頼者＝見えにくさがある」ことを
+// 記録すると、同意の前に要配慮個人情報を取得したことになる。
+// 保存は次の同意の画面（ConsentScreen）で、同意と一緒に行う。
+export function RoleSelectScreen({ onPick }: { onPick: (role: Role) => void }) {
+  const pick = (role: Role) => onPick(role);
 
   return (
     <ScrollView contentContainerStyle={styles.root}>
@@ -32,7 +20,6 @@ export function RoleSelectScreen({ onDone }: { onDone: (profile: Profile) => voi
         label="読んでもらう"
         hint="カメラを向けて、ボランティアに読んでもらいます"
         onPress={() => pick("requester")}
-        disabled={busy}
       />
       <View style={{ height: space.md }} />
       <BigButton
@@ -40,7 +27,6 @@ export function RoleSelectScreen({ onDone }: { onDone: (profile: Profile) => voi
         hint="依頼が来たときに通知を受け取り、読み上げます"
         variant="secondary"
         onPress={() => pick("volunteer")}
-        disabled={busy}
       />
     </ScrollView>
   );

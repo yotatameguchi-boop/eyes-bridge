@@ -4,12 +4,13 @@ import { registerGlobals } from "@livekit/react-native";
 import { BigButton } from "./src/components/BigButton";
 import { SignInScreen } from "./src/screens/SignInScreen";
 import { RoleSelectScreen } from "./src/screens/RoleSelectScreen";
+import { ConsentScreen } from "./src/screens/ConsentScreen";
 import { RequesterHomeScreen } from "./src/screens/RequesterHomeScreen";
 import { VolunteerHomeScreen } from "./src/screens/VolunteerHomeScreen";
 import { CallScreen } from "./src/screens/CallScreen";
 import { ReadAloudScreen } from "./src/screens/ReadAloudScreen";
 import { ReportScreen } from "./src/screens/ReportScreen";
-import { signOut, useSession, type Profile } from "./src/lib/session";
+import { fetchMissingConsents, signOut, useSession, type Profile, type Role } from "./src/lib/session";
 import { onNotificationTapped } from "./src/lib/push";
 import { claimRequest, AlreadyTakenError } from "./src/lib/requests";
 import { notifyStateChange } from "./src/lib/a11y";
@@ -29,6 +30,24 @@ type Screen =
 export default function App() {
   const { session, profile, loading, setProfile } = useSession();
   const [screen, setScreen] = useState<Screen>({ name: "home" });
+  // 役割を選んだが、まだ同意していない（＝まだ何も保存していない）
+  const [pendingRole, setPendingRole] = useState<Role | null>(null);
+  // 文書の版が上がって、同意し直しが要る
+  const [needsReconsent, setNeedsReconsent] = useState(false);
+
+  useEffect(() => {
+    if (!profile) {
+      setNeedsReconsent(false);
+      return;
+    }
+    let alive = true;
+    void fetchMissingConsents()
+      .then((missing) => alive && setNeedsReconsent(missing.length > 0))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [profile?.id, profile?.role]);
 
   const openCall = useCallback((request: HelpRequest) => {
     setScreen({ name: "call", request });
@@ -74,7 +93,32 @@ export default function App() {
   if (!profile) {
     return (
       <Shell>
-        <RoleSelectScreen onDone={(p: Profile) => setProfile(p)} />
+        {pendingRole ? (
+          <ConsentScreen
+            mode="register"
+            role={pendingRole}
+            onDone={(p: Profile) => {
+              setPendingRole(null);
+              setProfile(p);
+            }}
+            onBack={() => setPendingRole(null)}
+          />
+        ) : (
+          <RoleSelectScreen onPick={setPendingRole} />
+        )}
+      </Shell>
+    );
+  }
+
+  if (needsReconsent) {
+    return (
+      <Shell>
+        <ConsentScreen
+          mode="reconsent"
+          role={profile.role}
+          onDone={() => setNeedsReconsent(false)}
+          onSignOut={signOut}
+        />
       </Shell>
     );
   }
