@@ -18,6 +18,9 @@ type Handlers = {
 // CallKit 側は自分で決めた UUID しか返してこないので、必ず持つ。
 const callToRequest = new Map<string, string>();
 const requestToCall = new Map<string, string>();
+// 自分が出た通話。「取られた」の知らせは自分が取ったときにも届くので、
+// これを見ずに止めると、自分の通話の着信画面まで終わらせてしまう
+const answered = new Set<string>();
 let configured = false;
 
 export async function setupCallKit(handlers: Handlers): Promise<void> {
@@ -88,6 +91,7 @@ export function ringIncoming(requestId: string, callerName = "見てほしい人
 
 /** 他のボランティアに先を越された。鳴らし続けない。 */
 export function stopRinging(requestId: string, reason: "taken" | "cancelled" = "taken") {
+  if (answered.has(requestId)) return;
   const callUUID = requestToCall.get(requestId);
   if (!callUUID) return;
 
@@ -104,6 +108,7 @@ export function stopRinging(requestId: string, reason: "taken" | "cancelled" = "
 
 /** こちらが取った。CallKit に「繋がった」と伝える。 */
 export function markAnswered(requestId: string) {
+  answered.add(requestId);
   const callUUID = requestToCall.get(requestId);
   if (callUUID) RNCallKeep.setCurrentCallActive(callUUID);
 }
@@ -116,6 +121,7 @@ export function endCall(requestId: string) {
 }
 
 function forget(requestId: string) {
+  answered.delete(requestId);
   const callUUID = requestToCall.get(requestId);
   if (callUUID) callToRequest.delete(callUUID);
   requestToCall.delete(requestId);

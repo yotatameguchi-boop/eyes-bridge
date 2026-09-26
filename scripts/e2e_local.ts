@@ -338,6 +338,107 @@ try {
     ok(againCheck.json?.flags?.includes("reused_after_deletion") ?? false,
       "退会した人の書類で作り直すと reused_after_deletion が立つ", JSON.stringify(againCheck.json?.flags));
   }
+  console.log("--- 11. 段階的な着信と、鳴らさない時間帯 ---");
+  // 着信の対象になる承認済みボランティアを7人そろえる（審査の手順は 3〜5 で確認済みなので、
+  // ここでは service role で状態だけ整える）。うち1人は、今が鳴らさない時間帯
+  const jstNow = new Date(Date.now() + 9 * 3600_000);
+  const hhmm = (d: Date) => d.toISOString().slice(11, 16);
+  const pool: User[] = [];
+  for (let i = 0; i < 7; i++) {
+    const v = await makeUser(`pool${i}`, "volunteer");
+    await admin.from("volunteer_status").update({
+      review_state: "approved",
+      agreed_to_terms_at: new Date().toISOString(),
+      is_available: true,
+      push_token: `ExponentPushToken[e2e-${i}]`,
+      push_kind: "expo",
+      last_seen_at: new Date(Date.now() - i * 1000).toISOString(),
+      ...(i === 6
+        ? { quiet_start: hhmm(new Date(jstNow.getTime() - 3600_000)), quiet_end: hhmm(new Date(jstNow.getTime() + 3600_000)) }
+        : {}),
+    }).eq("user_id", v.id);
+    pool.push(v);
+  }
+  const poolIds = new Set(pool.map((v) => v.id));
+  const ringsOf = async (requestId: string) =>
+    ((await admin.from("request_rings").select("user_id, wave").eq("request_id", requestId)).data ?? [])
+      .filter((r: { user_id: string }) => poolIds.has(r.user_id)) as { user_id: string; wave: number }[];
+
+  // 前の依頼が残っていると2件目を立てられないので、取り下げておく
+  await requester.client.rpc("end_help_request", { p_request: req2.data.id, p_state: "cancelled" });
+
+  const req3 = await requester.client.from("help_requests").insert({ requester_id: requester.id }).select().single();
+  const waveRing = await invoke(requester, "ring-volunteers", { requestId: req3.data.id });
+  ok(waveRing.status === 200 && waveRing.json?.dryRun === true, "手元では外部に送らずに着信の段を動かす", waveRing.text);
+  const wave1 = await ringsOf(req3.data.id);
+  ok(wave1.length === 5 && wave1.every((r) => r.wave === 1), "1段目は5人だけ鳴らす", JSON.stringify(wave1));
+
+  await new Promise((r) => setTimeout(r, (Number(Deno.env.get("RING_WAVE_SECONDS") ?? "2") + 2) * 1000));
+  const afterWave2 = await ringsOf(req3.data.id);
+  ok(afterWave2.length === 6 && afterWave2.filter((r) => r.wave === 2).length === 1,
+    "誰も取らなければ、次の段で残りの人を鳴らす", JSON.stringify(afterWave2));
+  ok(!afterWave2.some((r) => r.user_id === pool[6].id), "鳴らさない時間帯の人は鳴らさない");
+
+  // 誰かが取ったら、次の段は鳴らさない
+  await requester.client.rpc("end_help_request", { p_request: req3.data.id, p_state: "cancelled" });
+  const req4 = await requester.client.from("help_requests").insert({ requester_id: requester.id }).select().single();
+  await invoke(requester, "ring-volunteers", { requestId: req4.data.id });
+  const firstWave = await ringsOf(req4.data.id);
+  const taker = pool.find((v) => v.id === firstWave[0]?.user_id)!;
+  const taken = await taker.client.rpc("claim_help_request", { p_request: req4.data.id });
+  ok(!taken.error, "鳴らされた人が依頼を取れる", taken.error?.message);
+  await new Promise((r) => setTimeout(r, (Number(Deno.env.get("RING_WAVE_SECONDS") ?? "2") + 2) * 1000));
+  ok((await ringsOf(req4.data.id)).length === firstWave.length, "取られた依頼では、次の段は鳴らさない");
+  await taker.client.rpc("end_help_request", { p_request: req4.data.id, p_state: "completed" });
+
+  console.log("--- 12. 待機列の知らせ（Broadcast）---");
+  {
+    const listen = async (user: User) => {
+      const events: { event: string; payload: any }[] = [];
+      const token = (await user.client.auth.getSession()).data.session!.access_token;
+      await user.client.realtime.setAuth(token);
+      let status = "";
+      const channel = user.client
+        .channel("queue:ja", { config: { private: true } })
+        .on("broadcast", { event: "request_queued" }, (m) => events.push({ event: "queued", payload: m.payload }))
+        .on("broadcast", { event: "request_closed" }, (m) => events.push({ event: "closed", payload: m.payload }))
+        .subscribe((s) => { status = s; });
+      const until = Date.now() + 8000;
+      while (!["SUBSCRIBED", "CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status) && Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { events, status: () => status, stop: () => user.client.removeChannel(channel) };
+    };
+    const waitFor = async (cond: () => boolean, ms = 6000) => {
+      const until = Date.now() + ms;
+      while (!cond() && Date.now() < until) await new Promise((r) => setTimeout(r, 100));
+      return cond();
+    };
+
+    const approvedEar = await listen(pool[0]);
+    const pendingEar = await listen(stranger); // 審査前のボランティア
+    ok(approvedEar.status() === "SUBSCRIBED", "承認済みのボランティアは待機列の知らせを購読できる", approvedEar.status());
+
+    const req5 = await requester.client.from("help_requests").insert({ requester_id: requester.id }).select().single();
+    ok(await waitFor(() => approvedEar.events.some((e) => e.event === "queued" && e.payload.id === req5.data.id)),
+      "新しい依頼の知らせが Broadcast で届く");
+    const queued = approvedEar.events.find((e) => e.event === "queued");
+    ok(queued !== undefined && !("requester_id" in queued.payload), "知らせに依頼者が誰かは含まれない",
+      JSON.stringify(queued?.payload));
+
+    const claimed = await pool[1].client.rpc("claim_help_request", { p_request: req5.data.id });
+    ok(!claimed.error, "（準備）別のボランティアが取る", claimed.error?.message);
+    ok(await waitFor(() => approvedEar.events.some((e) => e.event === "closed" && e.payload.id === req5.data.id)),
+      "取られた依頼の知らせも届く（一覧から外せる）");
+
+    await new Promise((r) => setTimeout(r, 1000));
+    ok(pendingEar.events.length === 0, "審査前のボランティアには、待機列の知らせは届かない",
+      `status=${pendingEar.status()} events=${JSON.stringify(pendingEar.events)}`);
+
+    await pool[1].client.rpc("end_help_request", { p_request: req5.data.id, p_state: "completed" });
+    await approvedEar.stop();
+    await pendingEar.stop();
+  }
 } catch (e) {
   failures++;
   console.log("FAIL  途中で例外:", e instanceof Error ? e.message : e);

@@ -1,16 +1,33 @@
-// 待機中のボランティア全員を同時に鳴らす。
+// 待機中のボランティアを、段階的に鳴らす。
 //
-// 1人ずつ順番に鳴らす設計にはしない。夜間は在席率が落ちるので、
-// 順番待ちにすると依頼者が数十秒待たされる。全員に鳴らして
-// 最初に取った1人が勝つ（取り合いは claim_help_request が捌く）。
-import { createClient } from "npm:@supabase/supabase-js@2";
+// 以前は1つの依頼で最大50人を一度に鳴らしていた。取れるのは1人だけなので、
+// 残りの49人は「鳴ったのに出たら終わっていた」を繰り返し、離れていく。
+// 今は、最初に数人（既定 5人）、誰も取らなければ間隔（既定 15秒）ごとに
+// 次の数人（15人 → 30人）を鳴らす。誰かが取った時点で次の段は鳴らない。
+// 誰を選ぶか（審査済み・待機中・鳴らさない時間帯でない・ブロック関係に無い・
+// まだ鳴らしていない）は DB の take_ring_wave が1つの処理で決める。
+//
+// 2段目以降は応答を返したあとに裏で続ける（EdgeRuntime.waitUntil）。
+// 依頼者のアプリを待たせないため。
+import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { authenticate, HttpError, json, serveJson } from "../_shared/auth.ts";
 import { sendVoipPush } from "../_shared/apns.ts";
 
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void } | undefined;
+
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
-const FANOUT_LIMIT = 50; // 1依頼で鳴らす上限。全国の全員を叩くと通知疲れで離脱する
+
+// 段の大きさと間隔。手元の検証では間隔を縮める（supabase/functions/.env）
+const WAVE_SIZES = (Deno.env.get("RING_WAVE_SIZES") ?? "5,15,30")
+  .split(",")
+  .map((n) => Number(n.trim()))
+  .filter((n) => n > 0);
+const WAVE_SECONDS = Number(Deno.env.get("RING_WAVE_SECONDS") ?? "15");
+// 手元では外部（Expo / APNs）に送らない。誰を選んだかの記録だけ残す
+const DRY_RUN = Deno.env.get("RING_DRY_RUN") === "true";
 
 type Target = { user_id: string; push_token: string; push_kind: string };
+type Request = { id: string; room_name: string; language: string };
 
 async function sendExpoPush(targets: Target[], requestId: string, roomName: string) {
   if (targets.length === 0) return 0;
@@ -39,6 +56,40 @@ async function sendExpoPush(targets: Target[], requestId: string, roomName: stri
   return targets.length;
 }
 
+/** 1段分を鳴らす。鳴らした人数を返す（依頼がもう待っていなければ 0） */
+async function ringWave(admin: SupabaseClient, request: Request, wave: number, size: number) {
+  const { data, error } = await admin.rpc("take_ring_wave", {
+    p_request: request.id,
+    p_wave: wave,
+    p_limit: size,
+  });
+  if (error) {
+    console.error("take_ring_wave failed", error.message);
+    return 0;
+  }
+
+  const targets = (data ?? []) as Target[];
+  if (targets.length === 0 || DRY_RUN) return targets.length;
+
+  const voip = targets.filter((t) => t.push_kind === "apns_voip");
+  const expo = targets.filter((t) => t.push_kind !== "apns_voip");
+
+  const voipResults = await Promise.all(
+    voip.map((t) =>
+      sendVoipPush(t.push_token, {
+        requestId: request.id,
+        roomName: request.room_name,
+        callerName: "依頼", // 依頼者の名前は出さない。通知画面は誰でも覗ける
+        language: request.language,
+      })
+    ),
+  );
+
+  return voipResults.filter(Boolean).length + await sendExpoPush(expo, request.id, request.room_name);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 Deno.serve(serveJson(async (req) => {
   const { userId, db } = await authenticate(req);
 
@@ -56,66 +107,34 @@ Deno.serve(serveJson(async (req) => {
   if (request.requester_id !== userId) throw new HttpError(403, "NOT_THE_REQUESTER");
   if (request.state !== "queued") throw new HttpError(409, "REQUEST_NOT_QUEUED");
 
-  // 着信は1依頼につき1回だけ。以前は同じ依頼で何度でも呼べたため、
-  // ボランティアのスマホを延々と鳴らす嫌がらせができた。
-  // 「鳴らした」印は DB で1回だけ付くので、同時に呼ばれても鳴るのは1回。
+  // 着信を始められるのは1依頼につき1回だけ（着信の連打を防ぐ）。
+  // 「鳴らした」印は DB で1回だけ付くので、同時に呼ばれても始まるのは1回。
   const { data: first, error: markError } = await db.rpc("mark_request_rung", {
     p_request: request.id,
   });
   if (markError) throw new HttpError(500, markError.message);
   if (first !== true) throw new HttpError(409, "ALREADY_RUNG");
 
-  // 宛先の取得だけは service-role で行う。
-  // 他人の push トークンは RLS で依頼者に見せていないため。
+  // 宛先の選択は service role で行う（他人の通知先は依頼者に見せない）
   const admin = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     { auth: { persistSession: false } },
   );
 
-  // 依頼者がブロックした相手／依頼者をブロックした相手は鳴らさない。
-  // RLS 側でも取得を弾いているが、通知が飛ぶだけで相手には
-  // 「誰かが助けを求めた」と伝わってしまうので、送信段階で落とす。
-  const { data: blockRows } = await admin
-    .from("blocks")
-    .select("blocker_id, blocked_id")
-    .or(`blocker_id.eq.${request.requester_id},blocked_id.eq.${request.requester_id}`);
+  const rung = await ringWave(admin, request, 1, WAVE_SIZES[0] ?? 5);
 
-  const excluded = new Set(
-    (blockRows ?? []).map((b: { blocker_id: string; blocked_id: string }) =>
-      b.blocker_id === request.requester_id ? b.blocked_id : b.blocker_id
-    ),
-  );
+  const rest = (async () => {
+    for (let i = 1; i < WAVE_SIZES.length; i++) {
+      await sleep(WAVE_SECONDS * 1000);
+      // 誰かが取った・取り下げた依頼は、次の段を鳴らさない（take_ring_wave も弾く）
+      const { data: now } = await admin.from("help_requests").select("state").eq("id", request.id).single();
+      if (now?.state !== "queued") return;
+      await ringWave(admin, request, i + 1, WAVE_SIZES[i]);
+    }
+  })().catch((e) => console.error("ring wave failed", e));
 
-  const { data: volunteers } = await admin
-    .from("volunteer_status")
-    .select("user_id, push_token, push_kind")
-    .eq("is_available", true)
-    .eq("language", request.language)
-    // 審査を通っていない人には依頼の存在自体を知らせない
-    .eq("review_state", "approved")
-    .not("agreed_to_terms_at", "is", null)
-    .not("push_token", "is", null)
-    .order("last_seen_at", { ascending: false })
-    .limit(FANOUT_LIMIT);
+  if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(rest);
 
-  const targets = ((volunteers ?? []) as Target[]).filter((t) => !excluded.has(t.user_id));
-  const voip = targets.filter((t) => t.push_kind === "apns_voip");
-  const expo = targets.filter((t) => t.push_kind !== "apns_voip");
-
-  const voipResults = await Promise.all(
-    voip.map((t) =>
-      sendVoipPush(t.push_token, {
-        requestId: request.id,
-        roomName: request.room_name,
-        callerName: "依頼",           // 依頼者の名前は出さない。通知画面は誰でも覗ける
-        language: request.language,
-      })
-    ),
-  );
-
-  const rung = voipResults.filter(Boolean).length +
-    await sendExpoPush(expo, request.id, request.room_name);
-
-  return json({ rung, availableTargets: targets.length });
+  return json({ rung, waves: WAVE_SIZES.length, intervalSeconds: WAVE_SECONDS, dryRun: DRY_RUN });
 }));

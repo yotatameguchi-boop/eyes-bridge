@@ -76,23 +76,47 @@ export function watchRequest(
 }
 
 /** ボランティア側。新しい依頼が立った瞬間を拾う。 */
+/** 一覧に出すのに要るものだけ（誰の依頼かは配られない） */
+export type QueuedRequest = Pick<HelpRequest, "id" | "created_at" | "language">;
+
+/**
+ * 待機列の知らせを受け取る。
+ *
+ * DB が Broadcast で配る（0014_queue_broadcast.sql）。以前は各ボランティアが
+ * 表の変更を購読しており、変更のたびに購読者一人ひとりの権限を確かめるため、
+ * 人数が増えると重くなった。非公開の channel なので、受け取れるかは
+ * DB の権限（承認済みのボランティアだけ）で決まる。
+ *
+ * 取られた・取り下げられた依頼の知らせ（onClosed）も来る。
+ */
 export function watchQueue(
   language: string,
-  onIncoming: (request: HelpRequest) => void,
+  handlers: { onQueued: (request: QueuedRequest) => void; onClosed: (requestId: string) => void },
 ): QueueHandle {
-  const channel = supabase
-    .channel(`queue:${language}`)
-    .on(
-      "postgres_changes",
-      { event: "INSERT", schema: "public", table: "help_requests" },
-      (payload) => {
-        const request = payload.new as HelpRequest;
-        if (request.language === language && request.state === "queued") onIncoming(request);
-      },
-    )
-    .subscribe();
+  let channel: ReturnType<typeof supabase.channel> | null = null;
+  let stopped = false;
 
-  return { unsubscribe: () => void supabase.removeChannel(channel) };
+  void (async () => {
+    // 非公開の channel には、ログイン中の利用者として入る
+    await supabase.realtime.setAuth();
+    if (stopped) return;
+    channel = supabase
+      .channel(`queue:${language}`, { config: { private: true } })
+      .on("broadcast", { event: "request_queued" }, ({ payload }) =>
+        handlers.onQueued(payload as QueuedRequest),
+      )
+      .on("broadcast", { event: "request_closed" }, ({ payload }) =>
+        handlers.onClosed((payload as { id: string }).id),
+      )
+      .subscribe();
+  })();
+
+  return {
+    unsubscribe: () => {
+      stopped = true;
+      if (channel) void supabase.removeChannel(channel);
+    },
+  };
 }
 
 /** 画面を開いた時点で既に並んでいる依頼。Realtime は「今後の変化」しか流さない。 */

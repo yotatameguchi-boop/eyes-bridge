@@ -8,7 +8,9 @@ import {
   fetchQueued,
   watchQueue,
   type QueueHandle,
+  type QueuedRequest,
 } from "../lib/requests";
+import { fetchQuietPreset, QUIET_PRESETS, saveQuietPreset, type QuietPreset } from "../lib/quiet";
 import { goOffline, goOnline } from "../lib/presence";
 import { registerForPush, setupVoipPush } from "../lib/push";
 import { endCall, markAnswered, ringIncoming, setupCallKit, stopRinging } from "../lib/calls";
@@ -27,7 +29,9 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
   const [standing, setStanding] = useState<VolunteerStanding | null>(null);
   const [loadingStanding, setLoadingStanding] = useState(true);
   const [available, setAvailable] = useState(false);
-  const [queue, setQueue] = useState<HelpRequest[]>([]);
+  const [queue, setQueue] = useState<QueuedRequest[]>([]);
+  const [quiet, setQuiet] = useState<QuietPreset | null>(null);
+  const [quietOpen, setQuietOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const refreshStanding = useCallback(async () => {
@@ -41,6 +45,23 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
   }, [refreshStanding]);
 
   const approved = standing?.reviewState === "approved" && standing.agreedToTerms;
+
+  useEffect(() => {
+    void fetchQuietPreset(profile.id).then(setQuiet).catch(() => {});
+  }, [profile.id]);
+
+  async function chooseQuiet(preset: QuietPreset) {
+    try {
+      await saveQuietPreset(profile.id, preset);
+      setQuiet(preset);
+      setQuietOpen(false);
+      await notifyStateChange(
+        preset.start ? `${preset.label}は鳴らしません` : "いつでも鳴らします",
+      );
+    } catch {
+      await notifyStateChange("設定できませんでした", "failed");
+    }
+  }
 
   const accept = useCallback(
     async (requestId: string) => {
@@ -109,9 +130,18 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
       if (!alive) return;
       setQueue(existing);
 
-      handle = watchQueue(profile.language, (request) => {
-        setQueue((q) => (q.some((r) => r.id === request.id) ? q : [...q, request]));
-        ringIncoming(request.id);
+      handle = watchQueue(profile.language, {
+        // 一覧に足すだけで、電話の着信画面は出さない。
+        // 以前はアプリを開いている全員を毎回鳴らしており、サーバの段階的な着信
+        // （最初は数人だけ）をすり抜けていた。鳴らすのはサーバからの着信だけにする
+        onQueued: (request) =>
+          setQueue((q) => (q.some((r) => r.id === request.id) ? q : [...q, request])),
+        // 他の人が取った・取り下げられた依頼は一覧から外し、鳴っていれば止める
+        // （「鳴ったのに出たら終わっていた」を減らす）
+        onClosed: (requestId) => {
+          setQueue((q) => q.filter((r) => r.id !== requestId));
+          stopRinging(requestId, "taken");
+        },
       });
     })();
 
@@ -181,6 +211,27 @@ export function VolunteerHomeScreen({ profile, onAccepted }: Props) {
           thumbColor={colors.text}
         />
       </View>
+
+      {/* 鳴らさない時間帯。サーバはこの時間帯の人を着信の段から外す */}
+      <View style={{ height: space.sm }} />
+      <BigButton
+        label={`鳴らさない時間帯：${quiet ? quiet.label : "未設定"}`}
+        hint={quietOpen ? "選択肢を閉じます" : "選択肢を開きます"}
+        variant="secondary"
+        onPress={() => setQuietOpen((v) => !v)}
+      />
+      {quietOpen
+        ? QUIET_PRESETS.map((preset) => (
+            <View key={preset.id} style={{ marginTop: space.xs }}>
+              <BigButton
+                label={preset.label}
+                variant={quiet?.id === preset.id ? "primary" : "secondary"}
+                hint={quiet?.id === preset.id ? "いまの設定です" : "この時間帯に変えます"}
+                onPress={() => chooseQuiet(preset)}
+              />
+            </View>
+          ))
+        : null}
 
       {/* live region にしない。待機の切り替えは notifyStateChange で、
           新しい依頼は OS の着信画面で伝えている。重ねると2回読まれる。 */}
