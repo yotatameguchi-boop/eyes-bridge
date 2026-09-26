@@ -11,6 +11,7 @@ import {
 } from "../lib/requests";
 import { watchAvailableCount } from "../lib/presence";
 import { notifyStateChange, say } from "../lib/a11y";
+import { EMERGENCY_NOTICE } from "../lib/cautions";
 import type { HelpRequest } from "../lib/supabase";
 import { colors, space, type as typeScale } from "../theme";
 
@@ -161,12 +162,24 @@ export function RequesterHomeScreen({ onConnected, onReadAloud }: Props) {
         variant="secondary"
         onPress={onReadAloud}
       />
+
+      {/* 毎回声に出すと、日常の操作のたびに聞かされて邪魔になる。
+          画面の最後に常に置き、なぞれば必ず行き当たるようにする。
+          同じことは登録時の同意でも読んでもらっている。 */}
+      <Text style={styles.emergency}>{EMERGENCY_NOTICE}</Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg, padding: space.md, paddingBottom: space.lg },
+  emergency: {
+    color: colors.textMuted,
+    fontSize: typeScale.caption,
+    lineHeight: 26,
+    marginTop: space.md,
+    textAlign: "center",
+  },
   availability: {
     color: colors.textMuted,
     fontSize: typeScale.caption,

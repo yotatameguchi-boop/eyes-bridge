@@ -119,6 +119,15 @@ export function ReadAloudScreen({ onBack }: { onBack: () => void }) {
               {reading.guidance}
             </Text>
           ) : null}
+          {reading.medicine ? (
+            <Text
+              style={styles.warning}
+              accessibilityElementsHidden
+              importantForAccessibility="no-hide-descendants"
+            >
+              お薬の説明のようです。飲む量や回数は、薬剤師か家族にも確かめてください。
+            </Text>
+          ) : null}
           {lowConfidence && hasText ? (
             <Text
               style={styles.warning}

@@ -15,6 +15,8 @@
 // 将来、撮る前に案内するライブ方式にしたときも、端末内の文字検出の結果を
 // 同じ形で渡せばこの関数をそのまま使える。
 
+import { looksLikeMedicine, MEDICINE_CAUTION } from "./cautions.ts";
+
 export type Box = [number, number, number, number]; // 0〜1 に正規化した x0, y0, x1, y1
 
 export type FrameLine = { text: string; confidence: number; box: Box };
@@ -143,8 +145,10 @@ function sidesPhrase(sides: Side[]): string {
 }
 
 export type Reading = {
-  /** 読み上げる内容（案内と本文を1つにまとめたもの） */
+  /** 読み上げる内容（案内・注意・本文を1つにまとめたもの） */
   spoken: string;
+  /** 薬の説明らしいか（画面にも注意を出す） */
+  medicine: boolean;
   /** 画面に出す案内。案内が無ければ null */
   guidance: string | null;
   /** 撮り直しを勧めるか（撮るボタンの名前を「撮り直す」にする） */
@@ -197,15 +201,18 @@ export function composeReading(
   const lowConfidence = hasText && lines.some((l) => l.confidence < THRESHOLDS.lowConfidence);
 
   if (!hasText) {
-    return { spoken: guidance ?? "", guidance, retake: true };
+    return { spoken: guidance ?? "", guidance, retake: true, medicine: false };
   }
 
-  const body = `${lowConfidence ? LOW_CONFIDENCE_NOTICE : ""}${text}`;
+  // 薬の説明なら、本文より先に「人にも確かめて」と言う。
+  // 自信の低い行への警告だけでは、自信満々の読み間違いを防げないため。
+  const medicine = looksLikeMedicine(text);
+  const body = `${medicine ? MEDICINE_CAUTION : ""}${lowConfidence ? LOW_CONFIDENCE_NOTICE : ""}${text}`;
   if (!guidance) {
-    return { spoken: body, guidance: null, retake: false };
+    return { spoken: body, guidance: null, retake: false, medicine };
   }
 
   // 「続きがあるかもしれない」は推測なので、撮り直しまでは勧めない
   const retake = g.kind !== "maybe-more";
-  return { spoken: `${guidance}読めたところを読みます。${body}`, guidance, retake };
+  return { spoken: `${guidance}読めたところを読みます。${body}`, guidance, retake, medicine };
 }

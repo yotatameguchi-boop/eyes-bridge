@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { LiveKitRoom, VideoTrack, useTracks } from "@livekit/react-native";
 import { Track } from "livekit-client";
+import * as ScreenCapture from "expo-screen-capture";
 import { BigButton } from "../components/BigButton";
 import { fetchJoinInfo, startAudio, stopAudio, type JoinInfo } from "../lib/livekit";
 import { endRequest } from "../lib/requests";
 import { endCall } from "../lib/calls";
 import { notifyStateChange, stopSpeaking } from "../lib/a11y";
+import { EMERGENCY_NOTICE_FOR_VOLUNTEER } from "../lib/cautions";
 import type { HelpRequest } from "../lib/supabase";
 import { colors, space, type as typeScale } from "../theme";
 
@@ -91,7 +93,21 @@ export function CallScreen({ request, role, onEnded }: Props) {
   );
 }
 
+const CAPTURE_KEY = "eyes-bridge-call";
+
 function RoomView({ role, onHangUp }: { role: "requester" | "volunteer"; onHangUp: () => void }) {
+  // ボランティアの端末では、通話中の画面録画とスクリーンショットを止める。
+  // 映るのは通帳や診断書かもしれない。以前は規約で禁じているだけだった。
+  // Android は録画・スクショとも、iOS は録画（11以降）とスクショ（13以降）を防ぐ。
+  // 別のスマホで画面を撮られることまでは防げない。
+  useEffect(() => {
+    if (role !== "volunteer") return;
+    void ScreenCapture.preventScreenCaptureAsync(CAPTURE_KEY);
+    return () => {
+      void ScreenCapture.allowScreenCaptureAsync(CAPTURE_KEY);
+    };
+  }, [role]);
+
   const tracks = useTracks([Track.Source.Camera]);
   const remoteCamera = tracks.find((t) => !t.participant.isLocal);
 
@@ -127,6 +143,11 @@ function RoomView({ role, onHangUp }: { role: "requester" | "volunteer"; onHangU
         </View>
       )}
 
+      {role === "volunteer" ? (
+        // 通話中は映像に集中しているので、画面に常に出しておく
+        <Text style={styles.emergency}>{EMERGENCY_NOTICE_FOR_VOLUNTEER}</Text>
+      ) : null}
+
       <BigButton label="通話を終わる" variant="danger" onPress={onHangUp} />
     </View>
   );
@@ -134,6 +155,13 @@ function RoomView({ role, onHangUp }: { role: "requester" | "volunteer"; onHangU
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg, padding: space.md },
+  emergency: {
+    color: colors.primary,
+    fontSize: typeScale.caption,
+    fontWeight: "700",
+    lineHeight: 26,
+    marginBottom: space.md,
+  },
   center: {
     alignItems: "center",
     backgroundColor: colors.bg,
