@@ -73,13 +73,14 @@ Deno.serve(serveJson(async (req) => {
   const inspection = await response.json() as {
     flags: string[];
     details: Record<string, unknown>;
-    phash: string | null;
+    // 氏名＋生年月日の HMAC。氏名そのものは受け取らない
+    fingerprint: string | null;
   };
 
   // 書き込みは service role のみ。重複検出はこの中で足される。
   const { data: flags, error: recordError } = await admin.rpc("record_document_check", {
     p_verification: verification.id,
-    p_phash: inspection.phash,
+    p_fingerprint: inspection.fingerprint,
     p_flags: inspection.flags,
     p_details: inspection.details,
   });

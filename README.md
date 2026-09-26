@@ -118,16 +118,22 @@ DB に持つのは「誰が・いつ・何秒繋がったか」と通報だけ�
 | `expired` | hard | 券面から読んだ有効期限が過去 |
 | `unreadable` | hard | 暗い・ぶれ・小さい。偽造以前に審査できない |
 | `keywords_missing` | soft | その書類にあるはずの語が1つも無い |
-| `duplicate_document` | soft | 同じ書類が別のアカウントでも使われている |
+| `duplicate_document` | soft | 同じ人の書類（氏名と生年月日が一致）が別のアカウントでも使われている |
 | `no_face_in_document` | soft | 顔写真のある面を撮っていない疑い |
 | `possible_screen_capture` | weak | モアレが強い。布や網戸ごしでも上がる |
 | `expiry_not_found` | weak | 期限を読めなかった。記載位置は書類ごとに違う |
+| `fingerprint_unavailable` | weak | 氏名か生年月日を読めず、使い回しを確かめられなかった |
 
-**使い回しの検出は知覚ハッシュ（pHash）で行う。**
-完全一致だけを見ると、撮り直し・トリミング・圧縮で別物になってすり抜ける。
-DCT ベースの 64bit ハッシュを取り、ハミング距離6以内を「同じ書類」とみなす。
-ハッシュからは元画像を復元できないので、**画像を消したあとも残せる**。
-本物の免許証を他人から借りている場合もここに出る。
+**使い回しの検出は、券面の氏名と生年月日から作る「書類の識別子」で行う。**
+OCR サーバが、券面から読んだ氏名と生年月日を、サーバだけが持つ鍵（`FINGERPRINT_KEY`）で
+HMAC にして返し、別のアカウントの書類と完全一致で照合する。同じ人の書類なら撮り直しても一致し、
+別人なら一致しない。氏名と生年月日そのものはどこにも残らず、鍵が無ければ総当たりでも戻せない。
+画像を消したあとも識別子は残せる。本物の免許証を家族から借りている場合もここに出る。
+
+以前は券面画像の知覚ハッシュ（pHash）のハミング距離で比べていたが、
+**様式が同じ免許証は別人どうしでも距離が 2〜6 になり、ほぼすべてを使い回しと誤判定していた**
+（見本画像で確かめた）。pHash が捉えるのは「見た目の様式」で「誰の書類か」ではないため。
+鍵は一度決めたら変えない（変えると、それまでの書類と照合できなくなる）。
 
 **やっていないこと。**
 券面の顔写真と自撮りが同一人物かの照合は**していない**。
@@ -425,12 +431,12 @@ deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean
 4種類ある。上から速い順。
 
 ```bash
-./supabase/tests/run.sh                                        # SQL 107件（stub。Supabase 不要）
+./supabase/tests/run.sh                                        # SQL 109件（stub。Supabase 不要）
 SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-  ./supabase/tests/run.sh                                      # SQL 107件（本物の Supabase）
+  ./supabase/tests/run.sh                                      # SQL 109件（本物の Supabase）
 (cd supabase/functions && deno test --allow-env --allow-read _tests/)   # Edge Function 6件
 (cd app && npm test)                                           # 読み上げ・撮影の案内・薬の注意・規約 36件
-deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 44件
+deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 47件
 ```
 
 SQL テストは同じファイルを stub と本物の両方に流せる。stub は速いが、
@@ -447,7 +453,7 @@ SQL テストは同じファイルを stub と本物の両方に流せる。stub
 PASS が1件も無いことも失敗として扱う（接続に失敗して何も走らなかったのに
 「通った」と報告していたことがあるため）。
 
-SQL テストで確かめていること（107件）:
+SQL テストで確かめていること（109件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -465,7 +471,7 @@ SQL テストで確かめていること（107件）:
 * 画像を消しても審査の結果は残る
 * 一般ユーザーには自分の行しか見えず、運営だけが全体を見られる
 * 自動チェックは service role しか書けない（運営でも本人でも直接書けない）
-* 別アカウントのほぼ同じ書類に `duplicate_document` が立ち、別物では立たない
+* 別アカウントが同じ人の書類を出すと `duplicate_document` が立ち、別人の書類・識別子の無い書類では立たない
 * 通報を処理済みにできるのは運営だけ
 * 依頼の表を直接書き換えられない（作成時刻をずらして上限をすり抜ける、状態を変える、を含む）
 * 未処理の依頼は1人1件。ただし時間切れで残った依頼では閉じ込めない
@@ -492,11 +498,11 @@ Edge Function のテスト（6件）:
 * トークンの JWT に載る権限が、依頼者は `camera`+`microphone`、ボランティアは `microphone` だけ
 * APNs のプロバイダトークンの署名を、その場で作った P-256 の鍵の公開鍵で検証できる
 
-通しのテスト `scripts/e2e_local.ts`（44件）:
+通しのテスト `scripts/e2e_local.ts`（47件）:
 
 * 発行したトークンを LiveKit サーバ自身が受け付ける（`/rtc/validate`）
 * 書類 → Storage → `inspect-identity` → OCR コンテナ → 判定の保存、が一本でつながる
-* 別アカウントが同じ書類を出すと `duplicate_document` が立つ
+* 別アカウントが同じ書類を出すと `duplicate_document` が立ち、**様式が同じ別人の免許証では立たない**
 * 審査前は依頼を取れず、本人確認と承認を経ると取れる
 * 期限切れの書類画像が Storage から実際に消え、審査の結果は残る
 * 2件目の依頼・作成時刻の改ざん・依頼の直接の書き換えが、どれも通らない
@@ -535,9 +541,9 @@ Edge Function のテスト（6件）:
 
 済んでいるもの:
 
-* SQL テスト 107件を **stub と本物の Supabase の両方で**（マイグレーション10本）
+* SQL テスト 109件を **stub と本物の Supabase の両方で**（マイグレーション11本）
 * Edge Function 4本の Deno の型チェックと、単体テスト 6件
-* 通しのテスト 44件（本物の Supabase + Edge Functions + LiveKit + OCR）
+* 通しのテスト 47件（本物の Supabase + Edge Functions + LiveKit + OCR）
 * 運営画面を**ブラウザで実際に操作**：コードでのログイン、書類画像の表示
   （署名付き URL）、旗の表示、理由なしの却下を止める、本人確認の承認、
   本人確認が済むまでボランティアの承認ボタンが押せない、通報の対応。

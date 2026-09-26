@@ -25,6 +25,8 @@ const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const LIVEKIT_HTTP = Deno.env.get("LIVEKIT_HTTP") ?? "http://127.0.0.1:7880";
 const OCR_HTTP = Deno.env.get("OCR_HTTP") ?? "http://127.0.0.1:8081";
 const card = await Deno.readFile(Deno.env.get("E2E_CARD_JPG")!);
+// 別人の、同じ様式の券面（ocr/make_sample_images.py の card2.jpg）
+const card2 = await Deno.readFile(Deno.env.get("E2E_CARD2_JPG")!);
 const selfie = await Deno.readFile(Deno.env.get("E2E_SELFIE_JPG")!);
 
 const admin = createClient(API, SERVICE, { auth: { persistSession: false } });
@@ -101,10 +103,10 @@ async function livekitAccepts(token: string): Promise<boolean> {
   return res.status === 200;
 }
 
-async function submitIdentity(user: User) {
+async function submitIdentity(user: User, document: Uint8Array = card) {
   const front = `${user.id}/${stamp}-front.jpg`;
   const face = `${user.id}/${stamp}-selfie.jpg`;
-  for (const [path, data] of [[front, card], [face, selfie]] as const) {
+  for (const [path, data] of [[front, document], [face, selfie]] as const) {
     const up = await user.client.storage.from(BUCKET).upload(path, data, { contentType: "image/jpeg" });
     if (up.error) throw up.error;
   }
@@ -204,6 +206,18 @@ try {
   const reusedCheck = await invoke(other, "inspect-identity", { verificationId: reused.id });
   ok(reusedCheck.json?.flags?.includes("duplicate_document") ?? false,
     "別アカウントが同じ書類を出すと duplicate_document が立つ", JSON.stringify(reusedCheck.json?.flags));
+
+  // 以前の知覚ハッシュ方式は、様式が同じ別人の免許証を使い回しと誤判定していた
+  const stranger = await makeUser("stranger", "volunteer");
+  await stranger.client.rpc("agree_to_terms");
+  const differentPerson = await submitIdentity(stranger, card2);
+  const differentCheck = await invoke(stranger, "inspect-identity", { verificationId: differentPerson.id });
+  ok(differentCheck.status === 200 && differentCheck.json?.details?.fingerprint === true,
+    "別人の券面からも識別子を作れる", JSON.stringify(differentCheck.json));
+  ok(!(differentCheck.json?.flags?.includes("duplicate_document") ?? true),
+    "様式が同じでも別人の免許証は、使い回しと判定しない", JSON.stringify(differentCheck.json?.flags));
+  ok(!JSON.stringify(differentCheck.json).includes("一郎"),
+    "検査の結果に氏名そのものは含まれない");
 
   console.log("--- 5. 運営が承認する ---");
   const notAdmin = await volunteer.client.rpc("review_identity", { p_id: verification.id, p_approve: true });

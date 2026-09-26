@@ -8,8 +8,9 @@
     docker cp "/System/Library/Fonts/ヒラギノ角ゴシック W3.ttc" eyes-bridge-ocr-1:/tmp/jp.ttc
     docker compose exec -T ocr python - < ocr/make_sample_images.py
     docker cp eyes-bridge-ocr-1:/tmp/card.jpg ./card.jpg
+    docker cp eyes-bridge-ocr-1:/tmp/card2.jpg ./card2.jpg
     docker cp eyes-bridge-ocr-1:/tmp/selfie.jpg ./selfie.jpg
-    docker compose exec -T ocr rm -f /tmp/jp.ttc /tmp/card.jpg /tmp/selfie.jpg
+    docker compose exec -T ocr rm -f /tmp/jp.ttc /tmp/card.jpg /tmp/card2.jpg /tmp/selfie.jpg
 """
 
 import numpy as np
@@ -36,7 +37,27 @@ for font, text in rows:
     y += 75
 card.save("/tmp/card.jpg", quality=92)
 
+# 別人の、同じ様式の券面。使い回しの検出が「様式」ではなく「誰の書類か」で
+# 判定していることを確かめるのに使う（以前の pHash はこれを使い回しと誤判定した）
+card2 = Image.new("RGB", (1100, 700), (235, 240, 230))
+draw = ImageDraw.Draw(card2)
+rows2 = [
+    (large, "運転免許証"),
+    (medium, "氏名　試験　一郎"),
+    (medium, "生年月日　昭和60年12月3日生"),
+    (medium, "住所　大阪府大阪市北区試験町9-9"),
+    (medium, "交付　令和5年4月1日"),
+    (medium, "令和9年1月1日まで有効"),
+    (medium, "免許の条件等"),
+    (medium, "大阪府公安委員会"),
+]
+y = 40
+for font, text in rows2:
+    draw.text((60, y), text, font=font, fill=(20, 20, 20))
+    y += 75
+card2.save("/tmp/card2.jpg", quality=92)
+
 rng = np.random.default_rng(3)
 Image.fromarray(rng.integers(0, 255, (480, 480, 3), dtype=np.uint8)).save("/tmp/selfie.jpg", quality=90)
 
-print("/tmp/card.jpg と /tmp/selfie.jpg を作りました")
+print("/tmp/card.jpg・/tmp/card2.jpg・/tmp/selfie.jpg を作りました")

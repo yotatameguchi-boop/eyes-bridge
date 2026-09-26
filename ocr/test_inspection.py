@@ -14,7 +14,7 @@ from datetime import date
 
 import numpy as np
 
-from inspection import count_faces, inspect, moire_score, parse_expiry, perceptual_hash
+from inspection import count_faces, document_fingerprint, inspect, moire_score, parse_expiry
 
 failures = 0
 
@@ -29,18 +29,24 @@ def ok(condition: bool, label: str) -> None:
 rng = np.random.default_rng(0)
 image = rng.integers(0, 255, (400, 640, 3), dtype=np.uint8)
 
-# --- 知覚ハッシュ -----------------------------------------------------
-h1 = perceptual_hash(image)
-ok(len(h1) == 64 and set(h1) <= {"0", "1"}, "pHash は 64bit の 0/1 文字列")
-ok(perceptual_hash(image) == h1, "同じ画像なら同じハッシュ")
+# --- 使い回しを検出する識別子 ---------------------------------------
+KEY = b"test-key"
+hanako = ["運転免許証", "氏名　見本　花子", "生年月日　平成5年4月1日生", "東京都公安委員会"]
+ichiro = ["運転免許証", "氏名　試験　一郎", "生年月日　昭和60年12月3日生", "東京都公安委員会"]
 
-# 撮り直し相当（明るさが変わっても同じ書類と判定できること）
-shifted = np.clip(image.astype(int) * 0.85 + 20, 0, 255).astype(np.uint8)
-near = sum(a != b for a, b in zip(h1, perceptual_hash(shifted)))
-ok(near <= 6, f"明るさが変わっても近い（ハミング距離 {near}）")
-
-far = sum(a != b for a, b in zip(h1, perceptual_hash(rng.integers(0, 255, (400, 640, 3), dtype=np.uint8))))
-ok(far > 6, f"別画像とは離れる（ハミング距離 {far}）")
+fp = document_fingerprint(hanako, KEY)
+ok(fp is not None and len(fp) == 64, "氏名と生年月日が読めれば識別子を作れる")
+ok(document_fingerprint(hanako, KEY) == fp, "同じ書類なら同じ識別子（撮り直しても同じ）")
+ok(document_fingerprint(ichiro, KEY) != fp,
+   "様式が同じでも別人なら別の識別子（以前の pHash はここで誤って一致していた）")
+ok(document_fingerprint(["氏名 見本花子", "平成5年4月1日生"], KEY) == fp,
+   "空白の入り方や全角・半角が違っても同じ人と分かる")
+ok(document_fingerprint(["氏名　見本　花子 平成5年4月1日生"], KEY) == fp,
+   "氏名と生年月日が同じ行に並ぶ券面でも読める")
+ok(document_fingerprint(hanako, b"other-key") != fp, "鍵が違えば別の識別子（鍵なしでは照合できない）")
+ok("花子" not in fp and "見本" not in fp, "識別子に氏名そのものは入らない")
+ok(document_fingerprint(["運転免許証", "東京都公安委員会"], KEY) is None, "氏名が読めなければ作らない")
+ok(document_fingerprint(["氏名　見本　花子"], KEY) is None, "生年月日が読めなければ作らない")
 
 # --- 有効期限 ---------------------------------------------------------
 ok(parse_expiry(["有効期限", "令和8年5月20日まで有効"]) == date(2026, 5, 20), "令和の日付を読める")
@@ -59,13 +65,14 @@ ok(moire_score(np.full((400, 640, 3), 128, dtype=np.uint8)) >= 0, "モアレ計�
 expired = inspect(
     "drivers_license", image, None,
     ["運転免許証", "公安委員会", "有効期限", "令和2年1月1日", "番号"],
-    [0.9] * 5, today=date(2026, 9, 23),
+    [0.9] * 5, fingerprint_key=KEY, today=date(2026, 9, 23),
 )
 ok("expired" in expired.flags, "期限切れに expired が立つ")
 ok("keywords_missing" not in expired.flags, "券面の語があれば keywords_missing は立たない")
-ok(expired.phash is not None, "pHash が返る")
+ok("fingerprint_unavailable" in expired.flags, "氏名が読めない券面では「使い回しを確かめられない」旗が立つ")
 
-wrong = inspect("drivers_license", image, None, ["まったく関係ない文字列"], [0.9], today=date(2026, 9, 23))
+wrong = inspect("drivers_license", image, None, ["まったく関係ない文字列"], [0.9],
+                fingerprint_key=KEY, today=date(2026, 9, 23))
 ok("keywords_missing" in wrong.flags, "違う紙なら keywords_missing が立つ")
 ok("unreadable" in wrong.flags, "文字数が少なければ unreadable が立つ")
 

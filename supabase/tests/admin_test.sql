@@ -74,28 +74,45 @@ select t_expect_error(
 
 \echo '--- 3. 同じ書類の使い回しを見つける ---'
 set role service_role;
--- X1 の書類にハッシュを付ける
+-- X1 の書類の識別子（OCR サーバが氏名＋生年月日から作る HMAC）
 select record_document_check(
   (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000f1'),
-  repeat('0', 32) || repeat('1', 32), '{}'::text[], '{"note":"first"}'::jsonb);
+  'fp-mihon-hanako', '{}'::text[], '{"note":"first"}'::jsonb);
 
--- X2 が、1ビットだけ違う（＝ほぼ同じ）書類を出してきた
+-- X2 が、同じ人の書類（同じ識別子）を出してきた
 with checked as (
   select record_document_check(
     (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000f2'),
-    repeat('0', 31) || '1' || repeat('1', 31) || '0', '{}'::text[], '{}'::jsonb) as flags
+    'fp-mihon-hanako', '{}'::text[], '{}'::jsonb) as flags
 )
 select t_expect('duplicate_document' = any(flags),
-  '別アカウントのほぼ同じ書類に duplicate_document が立つ') from checked;
+  '別アカウントが同じ人の書類を出すと duplicate_document が立つ') from checked;
 
--- まったく別の書類では立たない
+-- 別の人の書類（様式が同じでも識別子は違う）では立たない
 with checked as (
   select record_document_check(
     (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000f2'),
-    repeat('01', 32), '{}'::text[], '{}'::jsonb) as flags
+    'fp-shiken-ichiro', '{}'::text[], '{}'::jsonb) as flags
 )
 select t_expect(not ('duplicate_document' = any(flags)),
-  '別物の書類では duplicate_document が立たない') from checked;
+  '別の人の書類では duplicate_document が立たない') from checked;
+
+-- 氏名か生年月日が読めず識別子が無いときは、照合しない（誤って一致させない）
+with checked as (
+  select record_document_check(
+    (select id from identity_verifications where user_id = '00000000-0000-0000-0000-0000000000f2'),
+    null, '{fingerprint_unavailable}'::text[], '{}'::jsonb) as flags
+)
+select t_expect(not ('duplicate_document' = any(flags)),
+  '識別子が無いときは使い回しと判定しない') from checked;
+
+-- 利用者は照合の関数を直接呼べない（他人の書類の有無を探れない）
+set role authenticated;
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000f1"}';
+select t_expect_error(
+  $q$select * from documents_with_fingerprint('fp-mihon-hanako', auth.uid())$q$,
+  'permission denied', '利用者は識別子で他人の書類を探せない');
+set role service_role;
 
 \echo '--- 4. 自動チェックの見える範囲 ---'
 set role authenticated;

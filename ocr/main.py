@@ -82,7 +82,7 @@ class OcrResponse(BaseModel):
 class InspectResponse(BaseModel):
     flags: list[str]
     details: dict
-    phash: str | None
+    fingerprint: str | None
 
 
 @dataclass
@@ -200,6 +200,10 @@ def extract(image: np.ndarray) -> tuple[list[Line], int]:
 # 利用者の認証と回数の上限は Edge Function 側で行い、ここは共有の鍵だけを見る。
 OCR_TOKEN = os.environ.get("OCR_TOKEN")
 
+# 書類の識別子（氏名＋生年月日の HMAC）の鍵。
+# 一度決めたら変えない。変えると、それまでの書類と照合できなくなる。
+FINGERPRINT_KEY = os.environ.get("FINGERPRINT_KEY")
+
 
 def require_token(x_ocr_token: str | None) -> None:
     # 未設定なら開けない。設定し忘れを「誰でも通る」で吸収しない。
@@ -258,6 +262,9 @@ async def inspect_endpoint(
     x_ocr_token: str | None = Header(None),
 ) -> InspectResponse:
     require_token(x_ocr_token)
+    # 鍵が無いまま動かすと、使い回しを黙って確かめないことになる。閉じる
+    if not FINGERPRINT_KEY:
+        raise HTTPException(status_code=503, detail="FINGERPRINT_NOT_CONFIGURED")
 
     front_raw = await front.read()
     if not front_raw:
@@ -284,10 +291,11 @@ async def inspect_endpoint(
         selfie=selfie_image,
         texts=[line.text for line in lines],
         confidences=[line.confidence for line in lines],
+        fingerprint_key=FINGERPRINT_KEY.encode(),
     )
 
     # 券面に書かれている内容は返さない。
     # 氏名も住所も、こちらで持つ理由が無い。
     del front_raw, front_image, selfie_image, lines
 
-    return InspectResponse(flags=result.flags, details=result.details, phash=result.phash)
+    return InspectResponse(flags=result.flags, details=result.details, fingerprint=result.fingerprint)

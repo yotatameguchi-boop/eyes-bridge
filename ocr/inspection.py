@@ -8,7 +8,7 @@
   * OCR で、その書類にあるはずの語が写っているかを見る
   * 有効期限を読み、切れていないかを見る
   * 顔が写っているかを数える（本人と一致するかは見ない）
-  * 知覚ハッシュを出す（同じ書類の使い回しを後から検出するため）
+  * 氏名と生年月日から、元に戻せない識別子を作る（同じ書類の使い回しを検出するため）
   * 画面を撮り直した疑いを、モアレの強さから弱いシグナルとして出す
 
 やっていないこと:
@@ -20,7 +20,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -46,30 +49,64 @@ _WESTERN_DATE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
 class Inspection:
     flags: list[str] = field(default_factory=list)
     details: dict = field(default_factory=dict)
-    phash: str | None = None
+    fingerprint: str | None = None
 
     def flag(self, name: str) -> None:
         if name not in self.flags:
             self.flags.append(name)
 
 
-def perceptual_hash(image: np.ndarray) -> str:
-    """DCT ベースの pHash を 64bit の文字列で返す。
+def _normalize(text: str) -> str:
+    """全角・半角と空白の違いで別人扱いにならないよう揃える。"""
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", text))
 
-    撮り直し・圧縮・軽いトリミングでも近い値になるので、
-    ハミング距離で「同じ書類か」を見られる。
-    元画像は復元できないので、画像を消したあとも残せる。
+
+def _extract_name_and_birth(texts: list[str]) -> tuple[str, date] | None:
+    """券面から氏名と生年月日を拾う。どちらかが読めなければ None。
+
+    運転免許証・マイナンバーカードの表面は「氏名」の欄がある。
+    生年月日は「生年月日」の欄か、「〜日生」と書かれた日付。
+    氏名と生年月日が同じ行に並ぶ券面もあるので、氏名からは日付を取り除く。
     """
-    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-    small = cv2.resize(gray, (32, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
+    name = ""
+    for text in texts:
+        if "氏名" in text:
+            rest = text.split("氏名", 1)[1]
+            rest = re.split(r"(令和|平成|昭和|\d{4}\s*年)", rest)[0]
+            name = _normalize(rest)
+            if name:
+                break
 
-    dct = cv2.dct(small)
-    # 低周波の 8x8 だけ使う。左上(直流成分)は明るさそのものなので中央値から外す。
-    block = dct[:8, :8]
-    median = np.median(np.delete(block.flatten(), 0))
+    birth = None
+    for text in texts:
+        if "生年月日" in text or re.search(r"日\s*生", text):
+            birth = _to_date(text)
+            if birth:
+                break
 
-    bits = (block.flatten() > median).astype(np.uint8)
-    return "".join(str(b) for b in bits)
+    if not name or birth is None:
+        return None
+    return name, birth
+
+
+def document_fingerprint(texts: list[str], key: bytes) -> str | None:
+    """同じ人の書類かどうかを比べるための、元に戻せない識別子。
+
+    以前は画像の知覚ハッシュ（pHash）を使っていたが、様式が同じ書類は
+    別人どうしでもハミング距離が 2〜6 になり（実際に確かめた）、
+    使い回しの判定（6以下）に引っかかった。pHash が捉えるのは
+    「見た目の様式」で、「誰の書類か」ではないため。
+
+    ここでは氏名と生年月日から、サーバだけが持つ鍵で HMAC を取る。
+    鍵が無ければ、氏名と生年月日の組み合わせを総当たりしても戻せない。
+    氏名と生年月日そのものは返さない・残さない。
+    """
+    found = _extract_name_and_birth(texts)
+    if found is None:
+        return None
+    name, birth = found
+    message = f"{name}|{birth.isoformat()}".encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
 
 
 def count_faces(image: np.ndarray) -> int:
@@ -156,6 +193,7 @@ def inspect(
     selfie: np.ndarray | None,
     texts: list[str],
     confidences: list[float],
+    fingerprint_key: bytes,
     today: date | None = None,
 ) -> Inspection:
     today = today or date.today()
@@ -209,6 +247,11 @@ def inspect(
         result.flag("possible_screen_capture")
 
     # --- 使い回しの検出用 ---
-    result.phash = perceptual_hash(front)
+    result.fingerprint = document_fingerprint(texts, fingerprint_key)
+    result.details["fingerprint"] = result.fingerprint is not None
+    if result.fingerprint is None:
+        # 氏名か生年月日が読めず、使い回しを確かめられなかった。
+        # 黙って「使い回しなし」に見せない
+        result.flag("fingerprint_unavailable")
 
     return result

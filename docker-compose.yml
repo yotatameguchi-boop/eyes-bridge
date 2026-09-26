@@ -66,6 +66,10 @@ services:
       # 呼べるのは Edge Function だけ。未設定だと全部の口が 503 で閉じる。
       # 手元用の固定値。本番では必ず変える。
       OCR_TOKEN: "${OCR_TOKEN:-local-dev-ocr-token}"
+      # 書類の識別子（氏名＋生年月日の HMAC）の鍵。未設定だと本人確認の検査は 503 で閉じる。
+      # 手元用の固定値。本番では必ず変え、一度決めたら変えない
+      # （変えると、それまでの書類と照合できなくなる）
+      FINGERPRINT_KEY: "${FINGERPRINT_KEY:-local-dev-fingerprint-key}"
       # 既定は mobile 系。精度を上げたいときだけ server 系に戻す
       # （そのぶんモデルが数百MBになり、初回取得が長い）
       OCR_DET_MODEL: "${OCR_DET_MODEL:-PP-OCRv5_mobile_det}"
