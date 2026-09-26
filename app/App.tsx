@@ -5,6 +5,7 @@ import { BigButton } from "./src/components/BigButton";
 import { SignInScreen } from "./src/screens/SignInScreen";
 import { RoleSelectScreen } from "./src/screens/RoleSelectScreen";
 import { ConsentScreen } from "./src/screens/ConsentScreen";
+import { DeleteAccountScreen } from "./src/screens/DeleteAccountScreen";
 import { RequesterHomeScreen } from "./src/screens/RequesterHomeScreen";
 import { VolunteerHomeScreen } from "./src/screens/VolunteerHomeScreen";
 import { CallScreen } from "./src/screens/CallScreen";
@@ -25,7 +26,8 @@ type Screen =
   | { name: "home" }
   | { name: "call"; request: HelpRequest }
   | { name: "report"; requestId: string }
-  | { name: "read" };
+  | { name: "read" }
+  | { name: "delete" };
 
 export default function App() {
   const { session, profile, loading, setProfile } = useSession();
@@ -148,6 +150,14 @@ export default function App() {
     );
   }
 
+  if (screen.name === "delete") {
+    return (
+      <Shell>
+        <DeleteAccountScreen onCancel={() => setScreen({ name: "home" })} />
+      </Shell>
+    );
+  }
+
   if (screen.name === "read") {
     return (
       <Shell>
@@ -168,6 +178,14 @@ export default function App() {
       )}
       <View style={styles.footer}>
         <BigButton label="ログアウト" variant="secondary" onPress={signOut} />
+        <View style={{ height: space.sm }} />
+        {/* App Store は、アカウントを作れるアプリにアプリ内での削除を求めている */}
+        <BigButton
+          label="退会する"
+          hint="確認の画面に進みます。まだ退会はしません"
+          variant="secondary"
+          onPress={() => setScreen({ name: "delete" })}
+        />
       </View>
     </Shell>
   );

@@ -51,6 +51,13 @@ function ok(condition: boolean, label: string, extra = "") {
 
 type User = { id: string; client: SupabaseClient };
 const created: string[] = [];
+
+// 退会で控えた識別子は利用者と紐づかないので、ユーザーを消しても残る。
+// 始める前の控えを覚えておき、終わりにこの実行で増えた分だけを消す
+const retiredBefore = new Set(
+  ((await admin.from("retired_fingerprints").select("fingerprint")).data ?? [])
+    .map((r: { fingerprint: string }) => r.fingerprint),
+);
 const stamp = Date.now();
 
 async function makeUser(tag: string, role: "requester" | "volunteer"): Promise<User> {
@@ -296,6 +303,41 @@ try {
   ok((left.data?.length ?? -1) === 0, "Storage から実体が消えている", `残り ${left.data?.length}`);
   const row = await admin.from("identity_verifications").select("state, front_path").eq("id", verification.id).single();
   ok(row.data?.state === "approved" && row.data?.front_path === "", "審査の結果は残り、画像への参照だけ消える");
+  console.log("--- 10. 退会 ---");
+  {
+    const anonDelete = await fetch(`${API}/functions/v1/delete-account`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: ANON, Authorization: `Bearer ${ANON}` },
+      body: "{}",
+    });
+    await anonDelete.body?.cancel();
+    ok(anonDelete.status === 401, "ログインしていなければ退会の処理は動かない", `HTTP ${anonDelete.status}`);
+
+    const leaver = await makeUser("leaver", "volunteer");
+    await leaver.client.rpc("agree_to_terms");
+    const v = await submitIdentity(leaver, card2);
+    await invoke(leaver, "inspect-identity", { verificationId: v.id });
+
+    const del = await invoke(leaver, "delete-account", {});
+    ok(del.status === 200 && del.json?.deleted === true, "本人は退会できる", `HTTP ${del.status} ${del.text}`);
+
+    const gone = await admin.auth.admin.getUserById(leaver.id);
+    ok(!gone.data?.user, "アカウントが消える");
+    const profile = await admin.from("profiles").select("id").eq("id", leaver.id);
+    ok((profile.data?.length ?? -1) === 0, "役割（プロフィール）が消える");
+    const consents = await admin.from("consents").select("document").eq("user_id", leaver.id);
+    ok((consents.data?.length ?? -1) === 0, "同意の記録が消える");
+    const files = await admin.storage.from(BUCKET).list(leaver.id);
+    ok((files.data?.length ?? -1) === 0, "本人確認の書類の画像が Storage から消える");
+
+    // 同じ書類で作り直すと、運営に分かる
+    const comeback = await makeUser("comeback", "volunteer");
+    await comeback.client.rpc("agree_to_terms");
+    const again = await submitIdentity(comeback, card2);
+    const againCheck = await invoke(comeback, "inspect-identity", { verificationId: again.id });
+    ok(againCheck.json?.flags?.includes("reused_after_deletion") ?? false,
+      "退会した人の書類で作り直すと reused_after_deletion が立つ", JSON.stringify(againCheck.json?.flags));
+  }
 } catch (e) {
   failures++;
   console.log("FAIL  途中で例外:", e instanceof Error ? e.message : e);
@@ -308,7 +350,12 @@ try {
     }
     await admin.auth.admin.deleteUser(id);
   }
-  console.log(`\n後片付け: ユーザー ${created.length} 人と画像を削除`);
+  const { data: retiredAfter } = await admin.from("retired_fingerprints").select("fingerprint");
+  const added = (retiredAfter ?? [])
+    .map((r: { fingerprint: string }) => r.fingerprint)
+    .filter((f: string) => !retiredBefore.has(f));
+  if (added.length) await admin.from("retired_fingerprints").delete().in("fingerprint", added);
+  console.log(`\n後片付け: ユーザー ${created.length} 人と画像、退会で控えた識別子 ${added.length} 件を削除`);
 }
 
 console.log(failures ? `\n${failures} 件落ちました` : "\nすべて通りました");

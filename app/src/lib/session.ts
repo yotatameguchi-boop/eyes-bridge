@@ -102,6 +102,16 @@ export async function fetchMissingConsents(): Promise<string[]> {
   return (data as string[] | null) ?? [];
 }
 
+/**
+ * 退会する。アカウントとデータを消し、ログアウトする。
+ * 消すのはサーバ（delete-account）。対象は自分のアカウントだけ。
+ */
+export async function deleteAccount(): Promise<void> {
+  const { error } = await supabase.functions.invoke("delete-account", { body: {} });
+  if (error) throw error;
+  await supabase.auth.signOut();
+}
+
 export async function signOut() {
   await supabase.auth.signOut();
 }

@@ -65,6 +65,16 @@ export const FLAG_INFO: Record<
     strength: "soft",
     note: "券面の氏名と生年月日が、別のアカウントの書類と一致した。使い回しか、家族の書類を借りているか、同じ人が2つ目のアカウントを作ったか。本物であってもここに出る。",
   },
+  from_suspended_account: {
+    label: "利用停止になって退会した人の書類",
+    strength: "hard",
+    note: "通報などで利用が止められたあと退会した人と、同じ氏名・生年月日の書類。作り直しで戻ろうとしている疑いが強い。",
+  },
+  reused_after_deletion: {
+    label: "退会した人の書類",
+    strength: "soft",
+    note: "以前退会した人と同じ氏名・生年月日の書類。本人が戻ってきただけのことが多い。",
+  },
   fingerprint_unavailable: {
     label: "使い回しを確かめられなかった",
     strength: "weak",

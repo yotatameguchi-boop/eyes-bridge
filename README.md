@@ -123,6 +123,8 @@ DB に持つのは「誰が・いつ・何秒繋がったか」と通報だけ�
 | `possible_screen_capture` | weak | モアレが強い。布や網戸ごしでも上がる |
 | `expiry_not_found` | weak | 期限を読めなかった。記載位置は書類ごとに違う |
 | `fingerprint_unavailable` | weak | 氏名か生年月日を読めず、使い回しを確かめられなかった |
+| `from_suspended_account` | hard | 利用停止になって退会した人と同じ書類 |
+| `reused_after_deletion` | soft | 退会した人と同じ書類（本人が戻ってきただけのことが多い） |
 
 **使い回しの検出は、券面の氏名と生年月日から作る「書類の識別子」で行う。**
 OCR サーバが、券面から読んだ氏名と生年月日を、サーバだけが持つ鍵（`FINGERPRINT_KEY`）で
@@ -213,6 +215,14 @@ OCR は自信満々で読み間違えることがあり、自信の低い行へ�
 （`cd app && npm run legal:docs`）。アプリの版と DB の版（`current_consent_version()`）が揃っているかは
 テストで確かめている。**【要記入】【要確認】は運営者が決める箇所**で、公開前に必ず専門家の確認が要る。
 
+**アプリからいつでも退会でき、そのときにデータを消す。**
+アカウント・役割・依頼の記録・通報・ブロック・同意の記録・書類の画像を消す（`delete-account`）。
+不正な作り直しを防ぐため、**書類の識別子（元に戻せない）と「利用停止されていたか」だけは残す**
+（プライバシーポリシーに記載）。これだけでは、その人が誰かは分からない。
+退会した人の書類で作り直すと運営画面に旗が立ち、利用停止されていた人なら強い旗
+（`from_suspended_account`）にする。残さないと、止められた人が退会して同じ書類で作り直せば元に戻れてしまう。
+App Store は、アカウントを作れるアプリにアプリ内での削除を求めている。
+
 ### 最初の管理者を作る
 
 `is_admin` はクライアントから立てられないので、最初の1人だけ service role で入れる。
@@ -271,6 +281,7 @@ supabase functions deploy ring-volunteers
 supabase functions deploy inspect-identity
 supabase functions deploy purge-identity-documents
 supabase functions deploy read-image
+supabase functions deploy delete-account
 ```
 
 手元で全部を立てる場合は下の「手元で通しで動かす」を参照。
@@ -431,12 +442,12 @@ deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean
 4種類ある。上から速い順。
 
 ```bash
-./supabase/tests/run.sh                                        # SQL 109件（stub。Supabase 不要）
+./supabase/tests/run.sh                                        # SQL 122件（stub。Supabase 不要）
 SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-  ./supabase/tests/run.sh                                      # SQL 109件（本物の Supabase）
+  ./supabase/tests/run.sh                                      # SQL 122件（本物の Supabase）
 (cd supabase/functions && deno test --allow-env --allow-read _tests/)   # Edge Function 6件
 (cd app && npm test)                                           # 読み上げ・撮影の案内・薬の注意・規約 36件
-deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 47件
+deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 54件
 ```
 
 SQL テストは同じファイルを stub と本物の両方に流せる。stub は速いが、
@@ -453,7 +464,7 @@ SQL テストは同じファイルを stub と本物の両方に流せる。stub
 PASS が1件も無いことも失敗として扱う（接続に失敗して何も走らなかったのに
 「通った」と報告していたことがあるため）。
 
-SQL テストで確かめていること（109件）:
+SQL テストで確かめていること（122件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -483,6 +494,8 @@ SQL テストで確かめていること（109件）:
 * 要配慮個人情報への同意が無いと依頼者として登録できず、そのとき役割は保存されない
 * 役割・同意の記録は直接書き換えられない。古い版への同意では登録できない
 * 文書の版が上がったら、同意し直すまで依頼を立てられず、ボランティアは待機列に入れない
+* 退会すると控えは識別子と停止の有無だけになり、誰だったかは残らない。利用者からは読めない
+* 退会した人の書類で作り直すと旗が立ち、止められていた人なら強い旗になる
 
 アプリのテスト（36件。端末不要、`node --test`）:
 
@@ -498,7 +511,7 @@ Edge Function のテスト（6件）:
 * トークンの JWT に載る権限が、依頼者は `camera`+`microphone`、ボランティアは `microphone` だけ
 * APNs のプロバイダトークンの署名を、その場で作った P-256 の鍵の公開鍵で検証できる
 
-通しのテスト `scripts/e2e_local.ts`（47件）:
+通しのテスト `scripts/e2e_local.ts`（54件）:
 
 * 発行したトークンを LiveKit サーバ自身が受け付ける（`/rtc/validate`）
 * 書類 → Storage → `inspect-identity` → OCR コンテナ → 判定の保存、が一本でつながる
@@ -508,6 +521,7 @@ Edge Function のテスト（6件）:
 * 2件目の依頼・作成時刻の改ざん・依頼の直接の書き換えが、どれも通らない
 * 同じ依頼で2回目の着信は `ALREADY_RUNG` で断られる
 * OCR サーバは鍵なしでは使えず、ログインしていれば `read-image` を通して読める
+* 退会するとアカウント・役割・同意・書類の画像が実際に消え、同じ書類で作り直すと旗が立つ
 
 ## まだ塞いでいない穴
 
@@ -541,9 +555,9 @@ Edge Function のテスト（6件）:
 
 済んでいるもの:
 
-* SQL テスト 109件を **stub と本物の Supabase の両方で**（マイグレーション11本）
+* SQL テスト 122件を **stub と本物の Supabase の両方で**（マイグレーション12本）
 * Edge Function 4本の Deno の型チェックと、単体テスト 6件
-* 通しのテスト 47件（本物の Supabase + Edge Functions + LiveKit + OCR）
+* 通しのテスト 54件（本物の Supabase + Edge Functions + LiveKit + OCR）
 * 運営画面を**ブラウザで実際に操作**：コードでのログイン、書類画像の表示
   （署名付き URL）、旗の表示、理由なしの却下を止める、本人確認の承認、
   本人確認が済むまでボランティアの承認ボタンが押せない、通報の対応。
