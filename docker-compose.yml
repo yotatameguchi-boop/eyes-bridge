@@ -70,6 +70,10 @@ services:
       # 手元用の固定値。本番では必ず変え、一度決めたら変えない
       # （変えると、それまでの書類と照合できなくなる）
       FINGERPRINT_KEY: "${FINGERPRINT_KEY:-local-dev-fingerprint-key}"
+      # 上の手元用の固定値のままだと、OCR サーバは起動を拒む。手元だけ許す。
+      # 本番でこれを true にしないこと（識別子の鍵が公開された値になり、
+      # 氏名と生年月日の組み合わせを総当たりで逆算できてしまう）
+      ALLOW_DEV_SECRETS: "${ALLOW_DEV_SECRETS:-true}"
       # 既定は mobile 系。精度を上げたいときだけ server 系に戻す
       # （そのぶんモデルが数百MBになり、初回取得が長い）
       OCR_DET_MODEL: "${OCR_DET_MODEL:-PP-OCRv5_mobile_det}"

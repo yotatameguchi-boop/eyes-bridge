@@ -192,6 +192,25 @@ RLS は「どの行を触れるか」しか制御しないので、「自分の�
 * 着信は1依頼につき1回。「鳴らした」印を DB で1回だけ付けるので、同時に呼ばれても鳴るのは1回
 * 読み取りは10分に30回まで
 
+**セキュリティチェックで実際に通った攻撃は、塞いでテストに入れてある。**
+手元の Supabase に攻撃のスクリプトを当てて、通ったものだけを直した（2026年9月）。
+
+| 通った攻撃 | 塞ぎ方 |
+|---|---|
+| ログインしていない人が、待っている依頼を全部時間切れにする・書類の保存場所を抜き出す・誰が運営かを調べる | 関数は作った時点で誰でも実行できる。「許したものだけ」に切り替え、利用者が呼べるのはアプリが使う14個だけ。判定用の関数は API に出ない `private` スキーマへ（`0015`） |
+| 提出したあとに本人が書類の画像を消し、別の画像に差し替える（自動チェックと運営が見る画像がずれる）。HTML も置けた | 消せるのは運営と削除処理だけ。書類置き場は画像・10MB まで（`0016`） |
+| メールの確認なしにパスワードで登録し、その場でログインする（使い捨てアカウントの大量作成） | メールの確認を必須にした。ログインは今までどおり6桁コード。コードの有効時間は10分 |
+| 使い捨てアカウントを並べて、同じボランティアを鳴らし続ける | 1人を鳴らすのは1時間に12回まで（`0016`） |
+| 展開すると数十GB になる画像（12MB 以内の PNG で数万×数万画素）を読み取りに送る | 展開する前に画素数（5000万）で止める |
+| Content-Length を書かずに大きな本文を送る | Edge Function が流しながら数えて 12MB で止める |
+
+あわせて直したもの: Edge Function の 500 で DB のエラー文を返さない / OCR と削除処理の鍵を一定時間で比べる /
+運営画面に CSP（外のスクリプトを読めない・外へ送れない）/ アプリのログイン情報を暗号化して保存 /
+断るときに本文を読み残すと、ゲートウェイが詰まって 60秒後に 504 になっていた（回数の上限に達した人にも起きていた）/
+OCR の画像と本文の解釈に使う Pillow・starlette・python-multipart を、既知の脆弱性の無い版へ。
+
+公開チャンネルから非公開の待機列に偽の知らせを送り込む攻撃は、試して**防げていた**（テストに残してある）。
+
 **別々の3人から通報されると自動で停止する。**
 ボランティアは待機を止め、依頼者は利用を止める（以前は依頼者は何人から通報されても
 止まらなかった）。依頼者にとって利用停止は「助けを呼べなくなる」ことなので、
@@ -263,7 +282,7 @@ docker compose up -d ocr          # 初回はモデルを落とすので数分�
 
 | サービス | 何が上がるか |
 |---|---|
-| `db` | マイグレーション6本を当てた PostgreSQL 17（`localhost:55432`）。テストと SQL いじり用 |
+| `db` | すべてのマイグレーションを当てた PostgreSQL 17（`localhost:55432`）。テストと SQL いじり用 |
 | `livekit` | 開発モードの SFU（`ws://localhost:7880`、鍵は `devkey` / `secret`）。通話の疎通確認用 |
 | `ocr` | PaddleOCR（`http://localhost:8081`）。読み上げと書類チェックの確認用 |
 
@@ -325,6 +344,10 @@ select vault.create_secret('https://<project>.supabase.co', 'project_url');
 select vault.create_secret('<service role key>', 'service_role_key');
 ```
 
+**登録にはメールの確認が要る（`enable_confirmations = true`）。** 外すと、パスワードでの
+登録（`/auth/v1/signup`）がメールを確かめずにその場でログイン情報を返し、使い捨てアカウントを
+いくらでも作れる。本番のプロジェクトにも `supabase config push` で反映すること。
+
 **ログインのメール文面。** アプリも運営画面も「6桁のコードを入力する」作り。
 Supabase 既定のテンプレートはリンクしか載せないので、そのままでは
 **誰もログインできない**（手元の検証で実際にそうなった）。
@@ -344,6 +367,11 @@ npx expo prebuild --clean
 npx expo run:ios       # または run:android
 ```
 
+ログイン情報（何か月も使えるリフレッシュトークンを含む）は暗号化して置く。
+鍵（AES-256）はキーチェーン（`expo-secure-store`）に、AES-GCM で暗号化したものを AsyncStorage に置く
+（キーチェーンは1項目 2KB ほどしか入らないため）。鍵は「一度ロック解除したあと」読める設定で、
+ロック中の画面から着信を取ってもログインが切れない。バックアップから別の端末へは移らない。
+
 ### 3. 運営画面
 
 ```bash
@@ -353,7 +381,7 @@ npm install
 npm run dev            # http://localhost:5180
 ```
 
-コンテナで配る場合（nginx。`no-referrer` / `noindex` / `DENY` のヘッダ付き）:
+コンテナで配る場合（nginx。`no-referrer` / `noindex` / `DENY` と CSP のヘッダ付き）:
 
 ```bash
 ADMIN_SUPABASE_ANON_KEY=<anon key> docker compose --profile admin up -d --build admin
@@ -361,6 +389,12 @@ ADMIN_SUPABASE_ANON_KEY=<anon key> docker compose --profile admin up -d --build 
 
 キーを渡し忘れるとビルドの時点で止まる。空のまま焼くと、開けるのに
 何もできない壊れた画面になるため。
+
+CSP は、スクリプトをこの画面のものだけ、通信と画像をこの画面と Supabase だけに絞る。
+運営のログイン情報は画面の中にあるので、万一スクリプトを差し込まれても外へ送れない。
+接続先の Supabase はイメージを作るときに CSP へ書き込む（`ADMIN_SUPABASE_URL`）。
+ブラウザで、外のスクリプト・外への送信・インラインのスクリプトがどれも止まり、
+画面の操作では違反が出ないことを確かめてある。
 
 service role キーはフロントに置かない。運営も普通のユーザーとしてログインし、
 `is_admin` で通す。画面を隠すのは親切であって守りではなく、実際の防御は
@@ -395,6 +429,7 @@ OCR_DET_MODEL=PP-OCRv5_server_det OCR_REC_MODEL=PP-OCRv5_server_rec docker compo
 ```bash
 docker compose exec -T ocr python - < ocr/test_inspection.py   # 書類の自動チェック
 docker compose exec -T ocr python - < ocr/test_framing.py      # 撮影の案内の材料（向きの戻し方など）
+docker compose exec -T ocr python - < ocr/test_limits.py       # 入口の歯止め（鍵・大きさ・画素数）
 ```
 
 実モデルを通す結合テスト（日本語の見本画像。フォントはテストのときだけ持ち込む）:
@@ -419,6 +454,10 @@ supabase secrets set OCR_URL=http://<ホスト>:8081 OCR_TOKEN=<共有する秘�
 
 `OCR_TOKEN` が未設定だと、OCR サーバはすべての口を 503 で閉じる。
 設定し忘れを「誰でも通る」で吸収しないため。
+
+`OCR_TOKEN` / `FINGERPRINT_KEY` が docker-compose.yml に書いてある手元用の値のままだと、
+OCR サーバは起動しない（手元の compose だけ `ALLOW_DEV_SECRETS=true` で許している）。
+識別子の鍵が公開された値だと、氏名と生年月日の組み合わせを総当たりで逆算できてしまうため。
 
 ## 手元で通しで動かす
 
@@ -462,12 +501,12 @@ deno run --allow-net --allow-env --allow-read scripts/seed_admin_demo.ts --clean
 4種類ある。上から速い順。
 
 ```bash
-./supabase/tests/run.sh                                        # SQL 139件（stub。Supabase 不要）
+./supabase/tests/run.sh                                        # SQL 152件（stub。Supabase 不要）
 SUPABASE_DB_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres \
-  ./supabase/tests/run.sh                                      # SQL 139件（本物の Supabase）
-(cd supabase/functions && deno test --allow-env --allow-read _tests/)   # Edge Function 6件
-(cd app && npm test)                                           # 読み上げ・撮影の案内・薬の注意・規約・時間帯 40件
-deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 66件
+  ./supabase/tests/run.sh                                      # SQL 152件（本物の Supabase）
+(cd supabase/functions && deno test --allow-env --allow-read _tests/)   # Edge Function 14件
+(cd app && npm test)                                           # 読み上げ・撮影の案内・薬の注意・規約・時間帯・ログイン情報の暗号化 48件
+deno run --allow-net --allow-env --allow-read scripts/e2e_local.ts      # 通し 78件
 ```
 
 SQL テストは同じファイルを stub と本物の両方に流せる。stub は速いが、
@@ -484,7 +523,7 @@ SQL テストは同じファイルを stub と本物の両方に流せる。stub
 PASS が1件も無いことも失敗として扱う（接続に失敗して何も走らなかったのに
 「通った」と報告していたことがあるため）。
 
-SQL テストで確かめていること（139件）:
+SQL テストで確かめていること（152件）:
 
 * 未審査のボランティアに待機列が見えない / 依頼を取れない
 * 自分で自分を承認できない / 自分を管理者にできない（列権限）
@@ -518,8 +557,11 @@ SQL テストで確かめていること（139件）:
 * 退会した人の書類で作り直すと旗が立ち、止められていた人なら強い旗になる
 * 着信は段ごとに決まった人数だけ選ばれ、同じ人は2回選ばれず、取られた依頼では次の段が空になる
 * 鳴らさない時間帯（日付をまたぐ設定を含む）・ブロック関係・審査前の人は選ばれない
+* ログインしていない人は公開している関数を1つも実行できず、利用者が実行できるのはアプリが使う14個だけ。すべての表で RLS が有効
+* 本人は提出した書類を消せず・書き換えられない。書類置き場は画像・10MB まで
+* 直近1時間に12回鳴らされた人は鳴らさない（1時間たてばまた鳴らす）
 
-アプリのテスト（40件。端末不要、`node --test`）:
+アプリのテスト（48件。端末不要、`node --test`）:
 
 * スクリーンリーダー使用中はその声だけ、未使用ならアプリの声だけで読む（二重にならない）
 * 撮影の案内：本物の OCR の出力9場面で、何と言うかを確かめる
@@ -527,13 +569,15 @@ SQL テストで確かめていること（139件）:
 * 薬の注意：薬袋や説明書によくある書き方では必ず付き、「薬味」「食後にコーヒー」
   「内容量 500ml」のような薬でない文では付かない
 * 規約：docs/legal/ が本文と同じか、アプリと DB で版が揃っているか、外してはいけない内容があるか
+* ログイン情報：AsyncStorage に平文が残らない、改ざんや鍵の消失ではログインしていない扱い、以前の平文は暗号化し直す
 
-Edge Function のテスト（6件）:
+Edge Function のテスト（14件）:
 
 * トークンの JWT に載る権限が、依頼者は `camera`+`microphone`、ボランティアは `microphone` だけ
 * APNs のプロバイダトークンの署名を、その場で作った P-256 の鍵の公開鍵で検証できる
+* 500 で中身を返さない、鍵を一定時間で比べる、本文を流しながら数えて止める、断るときも本文を読み捨ててから返す
 
-通しのテスト `scripts/e2e_local.ts`（66件）:
+通しのテスト `scripts/e2e_local.ts`（78件）:
 
 * 発行したトークンを LiveKit サーバ自身が受け付ける（`/rtc/validate`）
 * 書類 → Storage → `inspect-identity` → OCR コンテナ → 判定の保存、が一本でつながる
@@ -548,6 +592,8 @@ Edge Function のテスト（6件）:
   取られた依頼では次の段が鳴らない（手元では外部に送らない設定で）
 * 本物の Realtime で、新しい依頼と「取られた」の知らせが承認済みのボランティアに届き、
   審査前の人には届かず、知らせに依頼者が誰かは含まれない
+* ログインしていない人が内部の関数（依頼の一括時間切れ・書類の保存場所）を呼べない
+* 書類のすり替え・HTML の設置・メール確認なしの登録・公開チャンネルからの偽の知らせ・巨大な本文が、どれも通らない
 
 ## まだ塞いでいない穴
 
@@ -572,6 +618,11 @@ Edge Function のテスト（6件）:
   弾くことまでは確認したが、Expo / APNs に実際に送ってはいない
   （外部サービスに送ることになるため）。
 - **TURN の実地確認をしていない。** LiveKit Cloud 前提なら不要だが、自前 SFU に移すときに詰まる。
+- **セキュリティチェックで見つけて、まだ直していないもの（優先度は低い）。**
+  承認済みのボランティアは、REST で待っている依頼の `requester_id`（依頼者の ID）を読める。
+  ID だけでは誰かは分からないが、同じ人の依頼が続けて来たことは分かる。
+  提出に失敗して `submit_identity` まで届かなかった書類の画像は、削除の対象に挙がらず残る
+  （本人は消せなくしたので、運営か退会で消える）。OCR のコンテナは root で動いている。
 - **端末内 TTS は sherpa-onnx ではなく OS 標準（expo-speech）。**
   sherpa-onnx には React Native バインディングが存在しないため。
   日本語は iOS / Android とも標準 TTS がオフラインで実用水準にある。
@@ -581,15 +632,19 @@ Edge Function のテスト（6件）:
 
 済んでいるもの:
 
-* SQL テスト 139件を **stub と本物の Supabase の両方で**（マイグレーション14本）。本物は `supabase db reset` で14本を空から当て直しても通る
-* Edge Function 4本の Deno の型チェックと、単体テスト 6件
-* 通しのテスト 66件（本物の Supabase + Edge Functions + Realtime + LiveKit + OCR）
+* SQL テスト 152件を **stub と本物の Supabase の両方で**（マイグレーション16本）
+* Edge Function の Deno の型チェックと、単体テスト 14件
+* 通しのテスト 78件（本物の Supabase + Edge Functions + Realtime + LiveKit + OCR）
+* 依存の監査：運営画面は `npm audit` で 0件。アプリは、ビルド時に Xcode のプロジェクトを書き換える道具が
+  使う古い uuid の1件だけだったので、新しい版に差し替えた（iOS の prebuild が通ることを確認）。
+  OCR は `pip-audit` で出た Pillow・starlette・python-multipart を上げた
+* git の履歴に秘密の値が入っていないこと（入っているのは手元用の固定値だけ）
 * 運営画面を**ブラウザで実際に操作**：コードでのログイン、書類画像の表示
   （署名付き URL）、旗の表示、理由なしの却下を止める、本人確認の承認、
   本人確認が済むまでボランティアの承認ボタンが押せない、通報の対応。
   操作の結果が DB に残り、審査者・対応者が記録されることも確認
 * `docker compose` の db / livekit / ocr / admin が healthy で上がる
-* OCR：単体 15件、日本語の見本画像での結合 9件（mobile 系モデル）
+* OCR：単体 15件、入口の歯止め 14件、日本語の見本画像での結合 9件（mobile 系モデル）
 * RN アプリの `tsc --noEmit`、`expo-doctor` 21項目中20項目
 * **アプリの JavaScript を iOS / Android 向けに実際に束ねられる**（`npx expo export`。
   985 モジュール → Hermes のバイトコード 4.4MB）。ネイティブのビルドとは別で、

@@ -219,6 +219,16 @@ OCR_TOKEN = os.environ.get("OCR_TOKEN")
 FINGERPRINT_KEY = os.environ.get("FINGERPRINT_KEY")
 
 
+# docker-compose.yml に書いてある手元用の値。公開リポジトリに載っているので、
+# このまま本番で動かすと、鍵が無いのと同じになる。明示的に許されない限り起動しない
+_DEV_SECRETS = {"local-dev-ocr-token", "local-dev-fingerprint-key"}
+if os.environ.get("ALLOW_DEV_SECRETS") != "true" and {OCR_TOKEN, FINGERPRINT_KEY} & _DEV_SECRETS:
+    raise RuntimeError(
+        "OCR_TOKEN / FINGERPRINT_KEY が手元用の値のままです。本番の値を設定してください"
+        "（手元で動かすときだけ ALLOW_DEV_SECRETS=true）"
+    )
+
+
 def require_token(x_ocr_token: str | None) -> None:
     # 未設定なら開けない。設定し忘れを「誰でも通る」で吸収しない。
     if not OCR_TOKEN:

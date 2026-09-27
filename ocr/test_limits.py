@@ -11,7 +11,7 @@ import os
 import sys
 
 os.environ.setdefault("OCR_TOKEN", "test-token")
-sys.path.insert(0, "/app")
+sys.path.insert(0, "/srv")
 
 from fastapi import HTTPException  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -72,5 +72,23 @@ ok = png(4_000, 3_000)
 check(main.load_image(ok).shape[:2] == (1500, 2000), "普通の写真の大きさは読み、長辺 2000 に縮める")
 
 check(status_of(lambda: main.load_image(b"not an image")) == 400, "画像でないものは 400")
+
+# --- 手元用の鍵のまま本番で動かさない ---
+import subprocess  # noqa: E402
+
+
+def starts(env: dict) -> bool:
+    base = {k: v for k, v in os.environ.items() if k not in ("OCR_TOKEN", "FINGERPRINT_KEY", "ALLOW_DEV_SECRETS")}
+    return subprocess.run([sys.executable, "-c", "import main"], cwd="/srv", env={**base, **env},
+                          capture_output=True).returncode == 0
+
+
+check(not starts({"OCR_TOKEN": "local-dev-ocr-token", "FINGERPRINT_KEY": "x" * 40}),
+      "OCR_TOKEN が手元用の値のままだと起動しない")
+check(not starts({"OCR_TOKEN": "y" * 40, "FINGERPRINT_KEY": "local-dev-fingerprint-key"}),
+      "FINGERPRINT_KEY が手元用の値のままだと起動しない")
+check(starts({"OCR_TOKEN": "local-dev-ocr-token", "FINGERPRINT_KEY": "local-dev-fingerprint-key",
+              "ALLOW_DEV_SECRETS": "true"}), "手元だけは明示して許せる")
+check(starts({"OCR_TOKEN": "y" * 40, "FINGERPRINT_KEY": "x" * 40}), "本番の値なら起動する")
 
 sys.exit(1 if failures else 0)
