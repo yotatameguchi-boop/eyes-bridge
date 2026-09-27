@@ -42,7 +42,8 @@
         }
       ],
       "expo-voip-push-notification",
-      "expo-dev-client"
+      "expo-dev-client",
+      "expo-secure-store"
     ],
     "extra": {
       "supabaseUrl": "$EXPO_PUBLIC_SUPABASE_URL",
