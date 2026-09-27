@@ -6,7 +6,7 @@
 // 消すのは画像だけで、審査の結果は残す。
 // 「いつ誰が承認したか」が消えると、問題が起きたときに辿れなくなる。
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { json, serveJson } from "../_shared/auth.ts";
+import { json, safeEqual, serveJson } from "../_shared/auth.ts";
 
 const BUCKET = "identity-documents";
 
@@ -16,7 +16,7 @@ Deno.serve(serveJson(async (req) => {
   const auth = req.headers.get("Authorization") ?? "";
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-  if (auth !== `Bearer ${serviceKey}`) {
+  if (!safeEqual(auth, `Bearer ${serviceKey}`)) {
     return json({ error: "FORBIDDEN" }, 403);
   }
 

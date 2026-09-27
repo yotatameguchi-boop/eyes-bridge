@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hmac
 import io
 import logging
 import os
@@ -29,6 +30,13 @@ log = logging.getLogger("ocr")
 
 MAX_BYTES = 12 * 1024 * 1024
 MAX_EDGE = 2000  # これ以上大きくしても精度は上がらず、CPU時間だけ伸びる
+
+# 画素数の上限。12MB 以内でも、単色の PNG なら数万×数万画素に広がる
+# （展開すると数十GB）。展開する前にヘッダの大きさで止める。
+# スマホの写真は大きくても 5000 万画素（8000×6000 程度）に収まる。
+MAX_PIXELS = 50_000_000
+# Pillow 自身の歯止めも同じ値にしておく（超えると警告、倍で例外）
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 # モデルは mobile 系を既定にする。
 #
@@ -121,9 +129,15 @@ def engine():
 
 def load_image(raw: bytes) -> np.ndarray:
     try:
+        # open はヘッダだけを読む。画素の展開は convert のときに起きる
         image = Image.open(io.BytesIO(raw))
+    except Image.DecompressionBombError as exc:
+        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail="UNREADABLE_IMAGE") from exc
+
+    if image.width * image.height > MAX_PIXELS:
+        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
 
     # スマホ写真は EXIF に回転が入っている。無視すると横倒しのまま認識して精度が落ちる
     image = ImageOps.exif_transpose(image).convert("RGB")
@@ -209,8 +223,24 @@ def require_token(x_ocr_token: str | None) -> None:
     # 未設定なら開けない。設定し忘れを「誰でも通る」で吸収しない。
     if not OCR_TOKEN:
         raise HTTPException(status_code=503, detail="OCR_NOT_CONFIGURED")
-    if x_ocr_token != OCR_TOKEN:
+    # 一定時間で比べる。`!=` は先頭から何文字合っているかで時間が変わり、
+    # 応答時間を測れば1文字ずつ当てられる
+    if not x_ocr_token or not hmac.compare_digest(x_ocr_token.encode(), OCR_TOKEN.encode()):
         raise HTTPException(status_code=403, detail="BAD_OCR_TOKEN")
+
+
+async def read_upload(upload: UploadFile) -> bytes:
+    """大きさを確かめてから読む。
+
+    受け取った時点で一時ファイルに置かれているので、大きさはもう分かっている。
+    上限を超えるものをメモリに読み込まない。
+    """
+    if upload.size is not None and upload.size > MAX_BYTES:
+        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
+    raw = await upload.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
+    return raw
 
 
 @app.get("/health")
@@ -224,11 +254,9 @@ async def ocr(
     x_ocr_token: str | None = Header(None),
 ) -> OcrResponse:
     require_token(x_ocr_token)
-    raw = await image.read()
+    raw = await read_upload(image)
     if len(raw) == 0:
         raise HTTPException(status_code=400, detail="EMPTY_IMAGE")
-    if len(raw) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
 
     image = load_image(raw)
     found, angle = extract(image)
@@ -266,20 +294,16 @@ async def inspect_endpoint(
     if not FINGERPRINT_KEY:
         raise HTTPException(status_code=503, detail="FINGERPRINT_NOT_CONFIGURED")
 
-    front_raw = await front.read()
+    front_raw = await read_upload(front)
     if not front_raw:
         raise HTTPException(status_code=400, detail="EMPTY_IMAGE")
-    if len(front_raw) > MAX_BYTES:
-        raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
 
     front_image = load_image(front_raw)
 
     selfie_image = None
     if selfie is not None:
-        selfie_raw = await selfie.read()
+        selfie_raw = await read_upload(selfie)
         if selfie_raw:
-            if len(selfie_raw) > MAX_BYTES:
-                raise HTTPException(status_code=413, detail="IMAGE_TOO_LARGE")
             selfie_image = load_image(selfie_raw)
         del selfie_raw
 

@@ -222,7 +222,12 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+# true にする。false のままだと、パスワードでの登録（/auth/v1/signup）が
+# メールの確認なしにその場でログイン情報を返し、使い捨てアカウントを
+# いくらでも作れた（セキュリティチェックで通った）。
+# アプリと運営画面は6桁コードでしかログインしないので、影響は無い
+# （新規の人には confirmation のテンプレートでコードが届く）。
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 secure_password_change = false
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
@@ -230,7 +235,8 @@ max_frequency = "1s"
 # Number of characters used in the email OTP.
 otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
-otp_expiry = 3600
+# 6桁は総当たりで当たり得るので、有効な時間を10分に縮める
+otp_expiry = 600
 
 # Use a production-ready SMTP server
 # [auth.email.smtp]

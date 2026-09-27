@@ -7,7 +7,7 @@
 //
 // 写真は読まずにそのまま流す。Edge Function には CPU 時間 2秒 / メモリ 256MB の
 // 上限があり、数MBの写真をここで解釈する意味は無い（中身は OCR サーバが確かめる）。
-import { authenticate, CORS, HttpError, serveJson } from "../_shared/auth.ts";
+import { authenticate, CORS, HttpError, limitBytes, serveJson } from "../_shared/auth.ts";
 
 const MAX_BYTES = 12 * 1024 * 1024; // OCR サーバ側の上限と揃える
 
@@ -24,6 +24,7 @@ Deno.serve(serveJson(async (req) => {
   }
   const length = Number(req.headers.get("content-length") ?? "0");
   if (length > MAX_BYTES) throw new HttpError(413, "IMAGE_TOO_LARGE");
+  if (!req.body) throw new HttpError(400, "EMPTY_IMAGE");
 
   // 回数の上限。止まっている人・未ログインもここで弾かれる
   const { error: quotaError } = await db.rpc("consume_ocr_quota");
@@ -35,14 +36,26 @@ Deno.serve(serveJson(async (req) => {
     throw new HttpError(500, message);
   }
 
-  const response = await fetch(`${ocrUrl}/ocr`, {
-    method: "POST",
-    headers: { "content-type": contentType, "x-ocr-token": ocrToken },
-    body: req.body,
-    // 受け取った本文をそのまま流す
-    // @ts-ignore: Deno の fetch は duplex を受け付けるが、型定義に無い版がある
-    duplex: "half",
-  });
+  // Content-Length を書かずに送られると上の確認をすり抜けるので、流しながらも数える。
+  // multipart の区切りの分だけ写真より大きくなるので、少し余裕を持たせる
+  const body = limitBytes(req.body, MAX_BYTES + 64 * 1024);
+  let response: Response;
+  try {
+    response = await fetch(`${ocrUrl}/ocr`, {
+      method: "POST",
+      headers: { "content-type": contentType, "x-ocr-token": ocrToken },
+      body: body.stream,
+      // 受け取った本文をそのまま流す
+      // @ts-ignore: Deno の fetch は duplex を受け付けるが、型定義に無い版がある
+      duplex: "half",
+    });
+  } catch (e) {
+    await body.drain();
+    if (body.exceeded()) throw new HttpError(413, "IMAGE_TOO_LARGE");
+    throw e;
+  }
+  // OCR サーバが途中で断った（壊れた写真など）ときも、残りを読み捨ててから返す
+  await body.drain();
 
   if (!response.ok) {
     console.error("ocr failed", response.status, await response.text());

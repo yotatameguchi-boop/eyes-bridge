@@ -459,6 +459,85 @@ try {
     ok((await rpc("blocked_between", { a: requester.id, b: volunteer.id })) === 404,
       "誰と誰がブロックし合っているかを調べる関数は API に出ていない");
   }
+  console.log("--- 14. セキュリティチェックで通った攻撃（その2）---");
+  {
+    // a. 提出したあとに書類の画像をすり替える（0016 で塞いだ）
+    const swapper = await makeUser("swapper", "volunteer");
+    await submitIdentity(swapper);
+    const front = `${swapper.id}/${stamp}-front.jpg`;
+    const docs = swapper.client.storage.from(BUCKET);
+    await docs.remove([front]);
+    const left = await admin.storage.from(BUCKET).list(swapper.id);
+    ok((left.data ?? []).some((f) => `${swapper.id}/${f.name}` === front), "本人は提出した書類を消せない");
+    const overwrite = await docs.upload(front, card2, { contentType: "image/jpeg", upsert: true });
+    ok(overwrite.error !== null, "本人は提出した書類を別の画像で上書きできない");
+    const html = await docs.upload(`${swapper.id}/${stamp}-x.html`, new TextEncoder().encode("<script>alert(1)</script>"),
+      { contentType: "text/html" });
+    ok(html.error !== null, "書類置き場に画像でないもの（HTML）は置けない");
+    const tooBig = await docs.upload(`${swapper.id}/${stamp}-big.jpg`, new Uint8Array(10 * 1024 * 1024 + 1),
+      { contentType: "image/jpeg" });
+    ok(tooBig.error !== null, "書類置き場に 10MB を超える画像は置けない");
+
+    // b. メールの確認なしにパスワードで登録して、その場でログインする
+    const signup = await fetch(`${API}/auth/v1/signup`, {
+      method: "POST",
+      headers: { apikey: ANON, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: `e2e-nomail-${stamp}@example.test`, password: crypto.randomUUID() }),
+    });
+    const signed = await signup.json();
+    const signedId = signed.user?.id ?? signed.id;
+    if (signedId) created.push(signedId);
+    ok(!signed.access_token, "メールを確認しないと、登録してもログインできない（使い捨てアカウントを作れない）",
+      `HTTP ${signup.status}`);
+
+    // c. 公開チャンネルから、非公開の待機列に偽の知らせを送り込む（防げていることの確認）
+    const ear = pool[0];
+    await ear.client.realtime.setAuth((await ear.client.auth.getSession()).data.session!.access_token);
+    const heard: string[] = [];
+    let earStatus = "";
+    const earChannel = ear.client.channel("queue:ja", { config: { private: true } })
+      .on("broadcast", { event: "request_closed" }, (m) => heard.push(JSON.stringify(m.payload)))
+      .subscribe((s) => { earStatus = s; });
+    const attacker = createClient(API, ANON, { auth: { persistSession: false } });
+    let attackerStatus = "";
+    const attackerChannel = attacker.channel("queue:ja").subscribe((s) => { attackerStatus = s; });
+    for (let i = 0; i < 80 && (earStatus !== "SUBSCRIBED" || attackerStatus !== "SUBSCRIBED"); i++) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await attackerChannel.send({ type: "broadcast", event: "request_closed", payload: { id: "fake" } });
+    await new Promise((r) => setTimeout(r, 1500));
+    ok(earStatus === "SUBSCRIBED" && heard.length === 0,
+      "ログインしていない人が公開チャンネルに送っても、待機列には届かない", `status=${earStatus} heard=${heard}`);
+    await ear.client.removeChannel(earChannel);
+    await attacker.removeChannel(attackerChannel);
+
+    // d. Content-Length を書かずに、巨大な本文を read-image に流し込む。
+    // 手元の Supabase ではゲートウェイ（Kong）が本文をため込んで長さを付け直すので、
+    // 関数に届く時点では Content-Length がある。流しながら数える側（limitBytes）は
+    // 関数の単体テストで確かめている。ここでは「詰まらずに 413 が返る」ことを見る
+    // （以前は、断るときに本文を読み残して 60秒後に 504 になっていた）
+    const chunk = new Uint8Array(1024 * 1024);
+    let sent = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(c) {
+        if (sent >= 40) return c.close();
+        sent++;
+        c.enqueue(chunk);
+      },
+    });
+    const token = (await requester.client.auth.getSession()).data.session!.access_token;
+    const flood = await fetch(`${API}/functions/v1/read-image`, {
+      method: "POST",
+      headers: {
+        apikey: ANON, Authorization: `Bearer ${token}`,
+        "Content-Type": "multipart/form-data; boundary=x",
+      },
+      body: endless,
+    }).catch((e) => ({ status: 0, text: () => Promise.resolve(String(e)) }) as unknown as Response);
+    const floodText = await flood.text();
+    ok(flood.status === 413, "Content-Length を書かずに 40MB 流しても、途中で 413 で止める",
+      `HTTP ${flood.status} ${floodText.slice(0, 80)} 送った=${sent}MB`);
+  }
 } catch (e) {
   failures++;
   console.log("FAIL  途中で例外:", e instanceof Error ? e.message : e);
