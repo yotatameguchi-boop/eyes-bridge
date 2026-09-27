@@ -13,5 +13,12 @@ RUN test -n "$VITE_SUPABASE_URL" && test -n "$VITE_SUPABASE_ANON_KEY" \
 RUN npm run build
 
 FROM nginx:alpine
+ARG VITE_SUPABASE_URL
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+# CSP に接続先の Supabase を書き込む（パスは落として origin だけにする）
+RUN origin="$(echo "$VITE_SUPABASE_URL" | sed -E 's#^(https?://[^/]+).*#\1#')" \
+ && ws="$(echo "$origin" | sed -E 's#^http#ws#')" \
+ && sed -i -e "s#__SUPABASE_ORIGIN__#$origin#g" -e "s#__SUPABASE_WS_ORIGIN__#$ws#g" /etc/nginx/conf.d/default.conf \
+ && ! grep -q "__SUPABASE" /etc/nginx/conf.d/default.conf \
+ && nginx -t
 COPY --from=build /app/dist /usr/share/nginx/html
