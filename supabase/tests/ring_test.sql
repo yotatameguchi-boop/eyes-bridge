@@ -124,7 +124,31 @@ select t_expect(
            where user_id = '00000000-0000-0000-0000-0000000e0008'),
   '22時〜7時を設定した人も、昼12時には鳴らす');
 
-\echo '--- 5. 利用者から触れる範囲 ---'
+\echo '--- 5. 1人を鳴らすのは1時間に12回まで ---'
+-- 使い捨てアカウントを大量に作れば、依頼の数の上限をすり抜けて同じ人を鳴らし続けられた
+insert into help_requests (id, requester_id, state)
+select ('e1000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid, '00000000-0000-0000-0000-0000000eff01', 'cancelled'
+  from generate_series(1, 20) i;
+delete from request_rings where user_id = '00000000-0000-0000-0000-0000000e0002';
+insert into request_rings (request_id, user_id, wave, rung_at)
+select ('e1000000-0000-0000-0000-' || lpad(i::text, 12, '0'))::uuid, '00000000-0000-0000-0000-0000000e0002', 1,
+       '2026-09-26 03:00:00+00'::timestamptz - make_interval(mins => i)
+  from generate_series(1, 12) i;       -- V2 は直近1時間に12回鳴らされている
+insert into help_requests (id, requester_id)
+     values ('e0000004-0000-0000-0000-000000000004', '00000000-0000-0000-0000-0000000eff01');
+select array_agg(user_id) as rung from take_ring_wave('e0000004-0000-0000-0000-000000000004', 1, 50, '2026-09-26 03:00:00+00') \gset w4_
+select t_expect(
+  not ('00000000-0000-0000-0000-0000000e0002'::uuid = any(:'w4_rung'::uuid[]))
+  and cardinality(:'w4_rung'::uuid[]) > 0,
+  '直近1時間に12回鳴らされた人は、次の依頼では鳴らさない（ほかの人は鳴らす）');
+insert into help_requests (id, requester_id)
+     values ('e0000005-0000-0000-0000-000000000005', '00000000-0000-0000-0000-0000000eff01');
+select t_expect(
+  exists (select 1 from take_ring_wave('e0000005-0000-0000-0000-000000000005', 1, 50, '2026-09-26 04:00:00+00')
+           where user_id = '00000000-0000-0000-0000-0000000e0002'),
+  '1時間たてば、また鳴らす');
+
+\echo '--- 6. 利用者から触れる範囲 ---'
 set role authenticated;
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000e0001"}';
 select t_expect_ok(

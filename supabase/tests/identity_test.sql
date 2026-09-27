@@ -139,6 +139,32 @@ select t_expect((select count(*) from storage.objects) = 0, '他人の書類は�
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000e1"}';
 select t_expect((select count(*) from storage.objects) = 1, '運営は書類を読める');
 
+-- 提出したあとに本人が画像を消して、別の画像に差し替えられた（セキュリティチェックで通った）
+-- 本物の Supabase は SQL からの直接削除をトリガーで止めている。Storage API は
+-- この設定を立てて消すので、同じ条件にしてから RLS の判定を確かめる
+select set_config('storage.allow_delete_query', 'true', false) is not null as _ \gset
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d1"}';
+delete from storage.objects where name = '00000000-0000-0000-0000-0000000000d1/front.jpg';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000e1"}';
+select t_expect((select count(*) from storage.objects) = 1,
+  '本人は提出した書類を消せない（消して別の画像に差し替えられない）');
+-- 書き換え（update）のルールは無いので、行は見えても 0 件になる
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000d1"}';
+update storage.objects set name = '00000000-0000-0000-0000-0000000000d1/other.jpg'
+ where name = '00000000-0000-0000-0000-0000000000d1/front.jpg';
+set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000e1"}';
+select t_expect(exists (select 1 from storage.objects where name = '00000000-0000-0000-0000-0000000000d1/front.jpg'),
+  '本人は提出した書類を書き換えられない');
+delete from storage.objects where name = '00000000-0000-0000-0000-0000000000d1/front.jpg';
+select t_expect((select count(*) from storage.objects) = 0, '運営は書類を消せる');
+reset role;
+select t_expect(
+  (select file_size_limit = 10485760
+      and allowed_mime_types = array['image/jpeg', 'image/png', 'image/heic', 'image/heif']
+     from storage.buckets where id = 'identity-documents'),
+  '書類置き場は画像だけ・10MB まで（HTML などは置けない）');
+set role authenticated;
+
 \echo '--- 7. 審査済みの画像は消す対象に挙がる ---'
 set role postgres;
 update identity_verifications set purge_after = now() - interval '1 day';
