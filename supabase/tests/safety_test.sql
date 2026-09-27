@@ -26,6 +26,16 @@ end $$;
 create or replace function t_expect(p_cond boolean, p_label text)
 returns text language sql as $$ select case when p_cond then 'PASS  ' else 'FAIL  ' end || p_label $$;
 
+-- テスト用の補助関数（t_ で始まる）は、どの役割からでも呼べるようにする。
+-- 本番の関数は 0015 で「許したものだけ」にしてあるので、ここで付けるのは補助関数だけ
+do $grant$ declare f regprocedure; begin
+  for f in select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.proname like 't\_%' loop
+    execute format('grant execute on function %s to public', f);
+  end loop;
+end $grant$;
+
+
 -- ------------------------------------------------------------- 登場人物
 insert into auth.users (id) values
   ('00000000-0000-0000-0000-0000000000a1'),  -- 依頼者 R
@@ -169,7 +179,7 @@ set role postgres;
 select t_expect((select review_state from volunteer_status where user_id='00000000-0000-0000-0000-0000000000b1') = 'suspended', '3人目の通報で自動停止する');
 set role authenticated;
 set request.jwt.claims = '{"sub":"00000000-0000-0000-0000-0000000000b1"}';
-select t_expect(not is_approved_volunteer(auth.uid()), '停止後は承認済みでなくなる');
+select t_expect(not private.is_approved_volunteer(auth.uid()), '停止後は承認済みでなくなる');
 
 \echo '--- 9. 通報された側に通報は見えない ---'
 select t_expect((select count(*) from reports) = 0, '通報された本人には通報が見えない');

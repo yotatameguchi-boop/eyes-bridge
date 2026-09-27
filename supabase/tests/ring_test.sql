@@ -27,6 +27,16 @@ end $$;
 create or replace function t_expect(p_cond boolean, p_label text)
 returns text language sql as $$ select case when p_cond then 'PASS  ' else 'FAIL  ' end || p_label $$;
 
+-- テスト用の補助関数（t_ で始まる）は、どの役割からでも呼べるようにする。
+-- 本番の関数は 0015 で「許したものだけ」にしてあるので、ここで付けるのは補助関数だけ
+do $grant$ declare f regprocedure; begin
+  for f in select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.proname like 't\_%' loop
+    execute format('grant execute on function %s to public', f);
+  end loop;
+end $grant$;
+
+
 \echo '--- 1. 鳴らさない時間帯の判定 ---'
 -- 日本時間 23:30（= UTC 14:30）
 select t_expect(in_quiet_hours('22:00', '07:00', 'Asia/Tokyo', '2026-09-26 14:30:00+00'),

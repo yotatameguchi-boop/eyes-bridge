@@ -439,6 +439,26 @@ try {
     await approvedEar.stop();
     await pendingEar.stop();
   }
+  console.log("--- 13. ログインしていない人は、内部の関数を呼べない ---");
+  {
+    // セキュリティチェックで、公開されている anon キーだけで実際に通った攻撃（0015 で塞いだ）
+    const rpc = async (fn: string, body: unknown) => {
+      const res = await fetch(`${API}/rest/v1/rpc/${fn}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: ANON, Authorization: `Bearer ${ANON}` },
+        body: JSON.stringify(body),
+      });
+      await res.body?.cancel();
+      return res.status;
+    };
+    ok((await rpc("expire_stale_requests", { p_after: "0 seconds" })) >= 400,
+      "待っている依頼を全部時間切れにする関数を呼べない");
+    ok((await rpc("identity_documents_to_purge", {})) >= 400, "本人確認書類の保存場所を抜き出せない");
+    ok((await rpc("mark_identity_purged", { p_id: crypto.randomUUID() })) >= 400, "書類への参照を消せない");
+    ok((await rpc("is_admin", { uid: operator.id })) === 404, "誰が運営かを調べる関数は API に出ていない");
+    ok((await rpc("blocked_between", { a: requester.id, b: volunteer.id })) === 404,
+      "誰と誰がブロックし合っているかを調べる関数は API に出ていない");
+  }
 } catch (e) {
   failures++;
   console.log("FAIL  途中で例外:", e instanceof Error ? e.message : e);

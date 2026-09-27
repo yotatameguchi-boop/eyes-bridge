@@ -27,6 +27,16 @@ end $$;
 create or replace function t_expect(p_cond boolean, p_label text)
 returns text language sql as $$ select case when p_cond then 'PASS  ' else 'FAIL  ' end || p_label $$;
 
+-- テスト用の補助関数（t_ で始まる）は、どの役割からでも呼べるようにする。
+-- 本番の関数は 0015 で「許したものだけ」にしてあるので、ここで付けるのは補助関数だけ
+do $grant$ declare f regprocedure; begin
+  for f in select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.proname like 't\_%' loop
+    execute format('grant execute on function %s to public', f);
+  end loop;
+end $grant$;
+
+
 -- 登場人物はまだ profiles を持たない（登録はこれから）
 insert into auth.users (id) values
   ('00000000-0000-0000-0000-0000000c0001'),  -- 依頼者になる人 R
@@ -123,11 +133,11 @@ insert into identity_verifications (user_id, kind, front_path, selfie_path, stat
 update volunteer_status
    set review_state = 'approved', agreed_to_terms_at = now()
  where user_id = '00000000-0000-0000-0000-0000000c0002';
-select t_expect(is_approved_volunteer('00000000-0000-0000-0000-0000000c0002'),
+select t_expect(private.is_approved_volunteer('00000000-0000-0000-0000-0000000c0002'),
   '（準備）同意も審査も揃ったボランティアは待機列に入れる');
 delete from consents
  where user_id = '00000000-0000-0000-0000-0000000c0002' and document = 'privacy';
-select t_expect(not is_approved_volunteer('00000000-0000-0000-0000-0000000c0002'),
+select t_expect(not private.is_approved_volunteer('00000000-0000-0000-0000-0000000c0002'),
   'プライバシーポリシーが改められたら、同意し直すまで待機列に入れない');
 
 \echo '--- 5. 依頼者に変えるときは、要配慮個人情報の同意が要る ---'

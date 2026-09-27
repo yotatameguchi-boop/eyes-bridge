@@ -18,6 +18,16 @@ end $$;
 create or replace function t_expect(p_cond boolean, p_label text)
 returns text language sql as $$ select case when p_cond then 'PASS  ' else 'FAIL  ' end || p_label $$;
 
+-- テスト用の補助関数（t_ で始まる）は、どの役割からでも呼べるようにする。
+-- 本番の関数は 0015 で「許したものだけ」にしてあるので、ここで付けるのは補助関数だけ
+do $grant$ declare f regprocedure; begin
+  for f in select p.oid::regprocedure from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+            where n.nspname = 'public' and p.proname like 't\_%' loop
+    execute format('grant execute on function %s to public', f);
+  end loop;
+end $grant$;
+
+
 insert into auth.users (id) values
   ('00000000-0000-0000-0000-0000000d0001'),  -- 止められたボランティア S
   ('00000000-0000-0000-0000-0000000d0002'),  -- 普通に退会するボランティア N
